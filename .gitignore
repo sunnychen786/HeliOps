@@ -1,0 +1,30 @@
+# Build artifacts
+dist/
+build_work/
+build_cache/
+build/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.spec
+
+# Release packages
+*.zip
+!assets/*.zip
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Game saves
+save.dat
+auto_save.dat
+
+# Workspace data
+.workbuddy/
+game_recovered.py
