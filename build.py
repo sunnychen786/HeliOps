@@ -37,8 +37,10 @@ if "--clean" in sys.argv:
 is_mac = sys.platform == "darwin"
 is_win = sys.platform == "win32"
 
+# Use `python -m PyInstaller` for cross-platform compatibility
+# (avoids pyinstaller binary path issues on Windows where it lands in Scripts/)
 cmd = [
-    os.path.join(os.path.dirname(sys.executable), "pyinstaller"),
+    sys.executable, "-m", "PyInstaller",
     "--onedir" if is_mac else "--onefile",   # macOS 用 onedir（app bundle），Windows 用 onefile
     "--windowed",
     "--name", GAME_NAME,
@@ -57,8 +59,7 @@ cmd = [
 ]
 
 if is_mac:
-    cmd.insert(cmd.index("--hidden-import") + 2, "--hidden-import")
-    cmd.insert(cmd.index("--hidden-import") + 2, "pygame._macosx")
+    cmd.extend(["--hidden-import", "pygame._macosx"])
 
 if is_mac:
     cmd.extend(["--osx-bundle-identifier", "com.heliops.game"])
