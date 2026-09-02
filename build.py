@@ -74,7 +74,7 @@ print(f"Platform: macOS" if is_mac else f"Platform: {sys.platform}")
 result = subprocess.run(cmd, cwd=WORK_DIR, env=env)
 
 if result.returncode != 0:
-    print("\n❌ 打包失败！")
+    print("\n[FAIL] Build failed!")
     sys.exit(1)
 
 # ---- 打包成 ZIP ----
@@ -96,13 +96,13 @@ if has_app:
         for root, _, files in os.walk(app_path)
         for f in files
     ) / (1024 * 1024)
-    print(f"\n✅ Build successful!")
+    print(f"\n[OK] Build successful!")
     print(f"   .app: {app_path}")
     print(f"   Size: {size_mb:.1f} MB")
 elif has_exe:
     size_mb = os.path.getsize(exe_path) / (1024 * 1024)
-    print(f"\n✅ 打包成功！")
-    print(f"   可执行文件: {exe_path}")
+    print(f"\n[OK] Build successful! (exe)")
+    print(f"   Executable: {exe_path}")
     print(f"   Size: {size_mb:.1f} MB")
 
 # Create ZIP release package
@@ -131,7 +131,7 @@ if not in_ci:
         release_mb = os.path.getsize(RELEASE_ZIP_PATH) / (1024 * 1024)
         print(f"   Release: {RELEASE_ZIP_PATH} ({release_mb:.1f} MB)")
     except Exception as e:
-        print(f"   ⚠️  Copy to release path failed: {e}")
+        print(f"   [WARN] Copy to release path failed: {e}")
 else:
     print(f"   (CI environment - skip Desktop copy)")
 
@@ -162,9 +162,9 @@ Save file location:
 Need help? Visit: https://sunnychen786.itch.io/heliops
 """)
 
-print(f"\n📦 Release package ready!")
+print(f"\n[DONE] Release package ready!")
 print(f"   dist/ contents:")
 print(f"   - {GAME_NAME}.app      (macOS app)")
 print(f"   - {GAME_NAME}.zip      (release package)")
 print(f"   - README.txt           (readme)")
-print(f"\n💡 Tip: Upload {GAME_NAME}.zip to itch.io to publish!")
+print(f"\nTip: Upload {GAME_NAME}.zip to itch.io to publish!")
