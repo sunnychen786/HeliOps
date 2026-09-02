@@ -30,10 +30,9 @@ jobs:
 
       - name: Verify build output
         run: |
-          echo "=== dist/ contents ==="
-          dir dist\
-          echo "=== Checking for HeliOps.exe ==="
-          if exist dist\HeliOps.exe (echo "OK: HeliOps.exe found") else (echo "ERROR: HeliOps.exe not found")
+          Get-ChildItem dist
+          if (Test-Path "dist/HeliOps.exe") { Write-Host "OK: HeliOps.exe found" }
+          else { Write-Error "HeliOps.exe not found"; exit 1 }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
