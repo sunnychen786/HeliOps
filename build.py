@@ -122,7 +122,7 @@ zip_mb = os.path.getsize(zip_path) / (1024 * 1024)
 print(f"   ZIP: {zip_path} ({zip_mb:.1f} MB)")
 
 # ---- 复制到发布路径 (本地 macOS 开发环境才做) ----
-RELEASE_ZIP_PATH = os.path.join(os.path.expanduser("~"), "Desktop", "游戏文件", "HeliOps.zip（v1.1).zip")
+RELEASE_ZIP_PATH = os.path.join(os.path.expanduser("~"), "Desktop", "游戏文件", "HeliOps（中文版）.zip")
 in_ci = os.environ.get("CI") == "true"
 if not in_ci:
     try:
@@ -138,28 +138,31 @@ else:
 # Create README
 readme_path = os.path.join(dist_dir, "README.txt")
 with open(readme_path, 'w') as f:
-    f.write("""HeliOps - Helicopter Extraction Shooter
+    f.write("""HeliOps - 直升机撤离射击（中文版）
 ========================================
 
-How to launch:
-  Windows: Double-click "HeliOps.exe"
-  macOS:   Double-click "HeliOps.app"
+如何启动：
+  Windows: 双击 "HeliOps.exe"
+  macOS:   双击 "HeliOps.app"
 
-Controls:
-  WASD/Arrow Keys - Move
-  Mouse            - Aim
-  Left Click       - Shoot
-  R                - Reload
-  E                - Interact / Search
-  Shift            - Call Extraction
-  ESC              - Pause
-  1-4              - Switch Weapons
+操作说明：
+  WASD / 方向键    - 移动直升机
+  空格             - 射击（自动瞄准最近敌人）
+  J                - 搜索物资（需靠近物资按住约1.5秒）
+  1-4 / Tab / 滚轮 - 切换武器
+  5                - 存档
+  9                - 读档
+  ESC              - 暂停游戏
 
-Save file location:
+游戏目标：
+  在战区搜索物资，飞到黄色撤离区域停留3秒完成撤离。
+  撤离后物资按倍率结算得分，可在补给站购买装备。
+
+存档位置：
   Windows: %USERPROFILE%/Documents/HeliOps/
   macOS:   ~/Documents/HeliOps/
 
-Need help? Visit: https://sunnychen786.itch.io/heliops
+需要帮助？访问：https://sunnychen786.itch.io/heliops
 """)
 
 print(f"\n[DONE] Release package ready!")
