@@ -56,10 +56,10 @@ SUPER_CHASER_COLOR = (30, 220, 80)   # Super Chaser exclusive green (invincible)
 # Gun system
 # ==============================
 GUN_TYPES = {
-    "pistol":  {"name": "手枪",   "icon": "🔫", "cooldown": 12, "speed": 9,  "damage": 1, "bullets": 1, "spread": 0,    "cost": 0,    "color": (160, 160, 160)},
-    "rifle":   {"name": "步枪",   "icon": "🎯", "cooldown": 8,  "speed": 14, "damage": 1, "bullets": 1, "spread": 0,    "cost": 800,  "color": (100, 150, 220)},
-    "shotgun": {"name": "霰弹枪", "icon": "💥", "cooldown": 30, "speed": 7,  "damage": 1, "bullets": 5, "spread": 0.25, "cost": 1500, "color": (220, 160, 60)},
-    "sniper":  {"name": "狙击枪", "icon": "🔭", "cooldown": 50, "speed": 22, "damage": 4, "bullets": 1, "spread": 0,    "cost": 2500, "color": (60, 200, 80)},
+    "pistol":  {"name": "手枪",   "icon": "", "cooldown": 12, "speed": 9,  "damage": 1, "bullets": 1, "spread": 0,    "cost": 0,    "color": (160, 160, 160)},
+    "rifle":   {"name": "步枪",   "icon": "", "cooldown": 8,  "speed": 14, "damage": 1, "bullets": 1, "spread": 0,    "cost": 800,  "color": (100, 150, 220)},
+    "shotgun": {"name": "霰弹枪", "icon": "", "cooldown": 30, "speed": 7,  "damage": 1, "bullets": 5, "spread": 0.25, "cost": 1500, "color": (220, 160, 60)},
+    "sniper":  {"name": "狙击枪", "icon": "", "cooldown": 50, "speed": 22, "damage": 4, "bullets": 1, "spread": 0,    "cost": 2500, "color": (60, 200, 80)},
 }
 GUN_SHOP_PRICES = {k: v["cost"] for k, v in GUN_TYPES.items() if v["cost"] > 0}
 
@@ -71,6 +71,7 @@ def _get_font(size):
     """Get a CJK-compatible font, compatible with Thonny sandbox environment"""
     file_candidates = [
         "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
         "/System/Library/Fonts/STHeiti Medium.ttc",
         "/System/Library/Fonts/STHeiti Light.ttc",
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
@@ -633,7 +634,7 @@ def check_tasks():
         extreme_mode_unlocked = True
         extreme_mode_active = True
         extreme_plays_remaining = 25  # Grant 25 extreme mode plays
-        search_message = "🔥🔥 极难模式永久解锁！获得25次！"
+        search_message = "★★ 极难模式永久解锁！获得25次！"
         search_message_timer = 300
         auto_save()  # Persist immediately
 
@@ -653,7 +654,7 @@ def check_adv_tasks():
         adv_boss_kills = 0
         adv_chaser_scared = 0
         adv_high_extract = 0
-        search_message = "🌟 进阶任务完成！极难模式次数+15！"
+        search_message = "★ 进阶任务完成！极难模式次数+15！"
         search_message_timer = 300
         auto_save()  # Persist immediately
 
@@ -1381,7 +1382,7 @@ def draw_extract_zone(ez):
         c = tuple(min(255, int(v * pulse * (1 + offset * 0.2))) for v in EXTRACT_COLOR)
         pygame.draw.rect(screen, c, rect, max(1, 3 - offset), border_radius=8)
 
-    icon_text = font_big.render("🚁", True, EXTRACT_COLOR)
+    icon_text = font_big.render("▼", True, EXTRACT_COLOR)
     screen.blit(icon_text, (cx - icon_text.get_width() // 2, cy - 18))
 
     zone_text = font_small.render("撤离点", True, WHITE)
@@ -1609,19 +1610,19 @@ def draw_hud():
     # Bottom status bar
     if game_over:
         if game_over_reason == "time_up":
-            status_text = font_small.render("⏰ 任务时间耗尽", True, (255, 180, 80))
+            status_text = font_small.render("任务时间耗尽", True, (255, 180, 80))
         else:
-            status_text = font_small.render("💥 直升机被击毁", True, (255, 80, 80))
+            status_text = font_small.render("! 直升机被击毁", True, (255, 80, 80))
     elif extract_hold_timer > 0:
         pct = int(extract_hold_timer / EXTRACT_HOLD_FRAMES * 100)
-        status_text = font_small.render(f"🟡 撤离中... {pct}%  稳住！",
+        status_text = font_small.render(f"● 撤离中... {pct}%  稳住！",
                                         True, EXTRACT_COLOR)
     elif searching_supply is not None:
         pct = int((1 - search_timer / SEARCH_DURATION) * 100)
-        status_text = font_small.render(f"🔍 搜索中... {pct}%  别走远！",
+        status_text = font_small.render(f"◎ 搜索中... {pct}%  别走远！",
                                         True, (100, 220, 255))
     else:
-        status_text = font_small.render("🟢 J搜索  |  停留3秒撤离  |  5存档 9读档",
+        status_text = font_small.render("● J搜索  |  停留3秒撤离  |  5存档 9读档",
                                         True, (100, 220, 100))
     screen.blit(status_text, (WIDTH // 2 - status_text.get_width() // 2, HEIGHT - 22))
 
@@ -1657,7 +1658,7 @@ def draw_hud():
             g = GUN_TYPES[gn]
             is_current = (gn == current_gun)
             g_color = g['color'] if is_current else (100, 100, 100)
-            g_label = font_small.render(f"{'▶' if is_current else ' '} {g['icon']} {g['name']}", True, g_color)
+            g_label = font_small.render(f"{'▶' if is_current else ' '} {g['name']}", True, g_color)
             screen.blit(g_label, (gun_x, 50 + i * 22))
     # Scroll wheel hint
     wheel_hint = font_small.render("Tab/滚轮/1-4 切枪", True, (120, 120, 120))
@@ -1665,7 +1666,7 @@ def draw_hud():
 
     # Ammo depleted hint (centered red text)
     if ammo_empty_timer > 0:
-        et = font_normal.render("⚠ 弹药耗尽！搜索弹药箱补给", True, (255, 80, 80))
+        et = font_normal.render("! 弹药耗尽！搜索弹药箱补给", True, (255, 80, 80))
         screen.blit(et, (WIDTH // 2 - et.get_width() // 2, HEIGHT // 2 - 60))
 
     # World coords position hint (bottom-left small text)
@@ -1704,9 +1705,9 @@ def draw_shop():
 
     # Option list
     options = [
-        ("1", f"恢复生命  +1 ❤", SHOP_RESTORE_COST, lives < max_lives and score >= SHOP_RESTORE_COST),
-        ("2", f"购买护甲  +1 🛡", SHOP_ARMOR_COST, score >= SHOP_ARMOR_COST),
-        ("3", f"购买弹药  +50 🔫", SHOP_AMMO_COST, score >= SHOP_AMMO_COST),
+        ("1", f"恢复生命  +1 ♥", SHOP_RESTORE_COST, lives < max_lives and score >= SHOP_RESTORE_COST),
+        ("2", f"购买护甲  +1 ◆", SHOP_ARMOR_COST, score >= SHOP_ARMOR_COST),
+        ("3", f"购买弹药  +50 ●", SHOP_AMMO_COST, score >= SHOP_AMMO_COST),
     ]
 
     for key, label, cost, available in options:
@@ -1723,11 +1724,11 @@ def draw_shop():
     cy += 30
 
     gun_options = [
-        ("4", "步枪 🎯", 800, score >= 800 and "rifle" not in owned_guns,
+        ("4", "步枪", 800, score >= 800 and "rifle" not in owned_guns,
          "已拥有" if "rifle" in owned_guns else ("800 分" if score >= 800 else "分数不足")),
-        ("5", "霰弹枪 💥", 1500, score >= 1500 and "shotgun" not in owned_guns,
+        ("5", "霰弹枪", 1500, score >= 1500 and "shotgun" not in owned_guns,
          "已拥有" if "shotgun" in owned_guns else ("1500 分" if score >= 1500 else "分数不足")),
-        ("6", "狙击枪 🔭", 2500, score >= 2500 and "sniper" not in owned_guns,
+        ("6", "狙击枪", 2500, score >= 2500 and "sniper" not in owned_guns,
          "已拥有" if "sniper" in owned_guns else ("2500 分" if score >= 2500 else "分数不足")),
     ]
     for key, label, cost, available, status in gun_options:
@@ -1769,7 +1770,7 @@ def draw_transfer_station():
     cy = panel_y + 20
 
     # Title
-    title = font_big.render("💥 直升机被击毁！", True, (255, 80, 80))
+    title = font_big.render("! 直升机被击毁！", True, (255, 80, 80))
     screen.blit(title, (WIDTH // 2 - title.get_width() // 2, cy))
     cy += title.get_height() + 5
 
@@ -1785,9 +1786,9 @@ def draw_transfer_station():
 
     # Options
     options = [
-        ("1", f"恢复生命  +1 ❤", SHOP_RESTORE_COST, lives < max_lives and score >= SHOP_RESTORE_COST),
-        ("2", f"购买护甲  +1 🛡", SHOP_ARMOR_COST, score >= SHOP_ARMOR_COST),
-        ("3", f"购买弹药  +3 🎯", SHOP_AMMO_COST, score >= SHOP_AMMO_COST),
+        ("1", f"恢复生命  +1 ♥", SHOP_RESTORE_COST, lives < max_lives and score >= SHOP_RESTORE_COST),
+        ("2", f"购买护甲  +1 ◆", SHOP_ARMOR_COST, score >= SHOP_ARMOR_COST),
+        ("3", f"购买弹药  +3 ●", SHOP_AMMO_COST, score >= SHOP_AMMO_COST),
     ]
 
     for key, label, cost, available in options:
@@ -1803,11 +1804,11 @@ def draw_transfer_station():
     cy += 30
 
     gun_options = [
-        ("4", "步枪 🎯", 800, score >= 800 and "rifle" not in owned_guns,
+        ("4", "步枪", 800, score >= 800 and "rifle" not in owned_guns,
          "已拥有" if "rifle" in owned_guns else ("800 分" if score >= 800 else "分数不足")),
-        ("5", "霰弹枪 💥", 1500, score >= 1500 and "shotgun" not in owned_guns,
+        ("5", "霰弹枪", 1500, score >= 1500 and "shotgun" not in owned_guns,
          "已拥有" if "shotgun" in owned_guns else ("1500 分" if score >= 1500 else "分数不足")),
-        ("6", "狙击枪 🔭", 2500, score >= 2500 and "sniper" not in owned_guns,
+        ("6", "狙击枪", 2500, score >= 2500 and "sniper" not in owned_guns,
          "已拥有" if "sniper" in owned_guns else ("2500 分" if score >= 2500 else "分数不足")),
     ]
     for key, label, cost, available, status in gun_options:
@@ -1851,7 +1852,7 @@ def show_settings():
     bar_x = WIDTH // 2 - bar_w // 2
     sfx_label = font_normal.render(f"音效音量: {int(sfx_volume * 100)}%", True, (200, 200, 200))
     screen.blit(sfx_label, (WIDTH // 2 - sfx_label.get_width() // 2, cy))
-    cy += 28
+    cy += sfx_label.get_height() + 6      # clear of the label's descenders
     pygame.draw.rect(screen, (50, 50, 60), (bar_x, cy, bar_w, 12), border_radius=6)
     pygame.draw.rect(screen, (100, 200, 255), (bar_x, cy, int(bar_w * sfx_volume), 12), border_radius=6)
     hint = font_small.render("[← →] 调节", True, (120, 120, 120))
@@ -1861,7 +1862,7 @@ def show_settings():
     # BGM volume
     bgm_label = font_normal.render(f"背景音乐音量: {int(bgm_volume * 100)}%", True, (200, 200, 200))
     screen.blit(bgm_label, (WIDTH // 2 - bgm_label.get_width() // 2, cy))
-    cy += 28
+    cy += bgm_label.get_height() + 6
     pygame.draw.rect(screen, (50, 50, 60), (bar_x, cy, bar_w, 12), border_radius=6)
     pygame.draw.rect(screen, (100, 255, 100), (bar_x, cy, int(bar_w * bgm_volume), 12), border_radius=6)
     hint2 = font_small.render("[↑ ↓] 调节", True, (120, 120, 120))
@@ -1885,7 +1886,9 @@ def show_settings():
     for key_t, desc in controls:
         ctrl_line = font_small.render(f"  {key_t}:  {desc}", True, (180, 200, 220))
         screen.blit(ctrl_line, (WIDTH // 2 - 200, cy))
-        cy += 20
+        # advance by the real rendered height: font_small(24) with CJK glyphs is
+        # taller than 20px, which made these lines overlap each other
+        cy += ctrl_line.get_height() + 2
 
     cy += 20
     back_hint = font_normal.render("[ESC] 返回主菜单", True, (160, 160, 160))
@@ -1919,27 +1922,27 @@ def show_tutorial():
         ("切换武器：", "数字键1-4 / Tab / 鼠标滚轮"),
         ("撤离：", "飞到黄色区域停留3秒"),
         ("", ""),
-        ("", "⚠️  敌人会巡逻和追击 — Boss非常致命！"),
-        ("", "💡  坠机时未撤离的物资会丢失"),
-        ("", "💡  撤离后到商店购买装备"),
+        ("", "!  敌人会巡逻和追击 — Boss非常致命！"),
+        ("", "坠机时未撤离的物资会丢失"),
+        ("", "撤离后到商店购买装备"),
         ("", ""),
-        ("", "按 Enter 出发。祝你好运！🚁"),
+        ("", "按 Enter 出发。祝你好运！"),
     ]
 
     for key_t, desc in instructions:
+        if not desc:
+            cy += 18
+            continue
         if key_t:
             line = font_normal.render(f"{key_t} {desc}", True, (200, 220, 240))
         else:
             line = font_normal.render(f"  {desc}", True, (180, 180, 180))
         screen.blit(line, (WIDTH // 2 - 280, cy))
-        if key_t:
-            cy += 32
-        else:
-            cy += 26
+        cy += line.get_height() + 2
 
     # Blinking Enter hint
     if pygame.time.get_ticks() % 1000 < 600:
-        enter_hint = font_normal.render("[Enter] Start Game", True, (100, 255, 150))
+        enter_hint = font_normal.render("[Enter] 开始游戏", True, (100, 255, 150))
         screen.blit(enter_hint, (WIDTH // 2 - enter_hint.get_width() // 2, HEIGHT - 80))
 
 
@@ -1973,7 +1976,7 @@ def show_main_menu():
         panel.fill((20, 50, 30, 200))
         pygame.draw.rect(panel, result_color, (0, 0, panel_w, panel_h), 2, border_radius=10)
         screen.blit(panel, (WIDTH // 2 - panel_w // 2, cy))
-        r_surf = font_normal.render("✅  撤离成功！", True, result_color)
+        r_surf = font_normal.render("√  撤离成功！", True, result_color)
         screen.blit(r_surf, (WIDTH // 2 - r_surf.get_width() // 2, cy + 10))
         cy += panel_h + 28
     else:
@@ -1986,7 +1989,7 @@ def show_main_menu():
     ]
     # D-key: always shown, label changes based on mode
     if extreme_mode_active:
-        mode_label = "极难模式：开启 🔥"
+        mode_label = "极难模式：开启 ★"
         mode_color = (255, 60, 30)
     elif hard_mode_active:
         mode_label = "困难模式：开启"
@@ -2025,29 +2028,37 @@ def show_main_menu():
 
     # ---- Task panel (P to open / 6 to close) ----
     if show_task_panel:
-        # Panel height: 3 normal tasks + advanced title + 3 advanced tasks + remaining plays + spacing
-        task_panel_w, task_panel_h = 540, 290
+        # Content-driven panel height + on-screen clamp: the panel used to be a
+        # fixed 290px tall box, so on short windows it spilled past the bottom
+        # edge and its lower lines were unreadable.
+        task_panel_w = 540
+        content_h = 6 + 22 + 22 * 3 + 28               # title + 3 normal tasks
+        if extreme_mode_permanent:
+            content_h += 22 + 22 * 3 + 28 + 22         # advanced tasks + plays left
+        task_panel_h = content_h + 10
+        panel_x = WIDTH // 2 - task_panel_w // 2
+        panel_y = max(12, min(cy, HEIGHT - task_panel_h - 12))
         task_panel = pygame.Surface((task_panel_w, task_panel_h), pygame.SRCALPHA)
         task_panel.fill((15, 18, 38, 220))
         pygame.draw.rect(task_panel, (70, 70, 150), (0, 0, task_panel_w, task_panel_h), 2, border_radius=10)
-        screen.blit(task_panel, (WIDTH // 2 - task_panel_w // 2, cy))
+        screen.blit(task_panel, (panel_x, panel_y))
 
-        cur_y = cy + 6
+        cur_y = panel_y + 6
 
         # Title
-        task_title = font_small.render("🔥 极难模式解锁任务", True, (255, 180, 70))
+        task_title = font_small.render("★ 极难模式解锁任务", True, (255, 180, 70))
         screen.blit(task_title, (WIDTH // 2 - task_title.get_width() // 2, cur_y))
         cur_y += 22
 
         # Task 1
         if extreme_mode_permanent:
             t1_done = True
-            t1_text = f"任务1：困难模式累计击杀Boss  {TASK1_BOSS_KILLS}/{TASK1_BOSS_KILLS} ✅"
+            t1_text = f"任务1：困难模式累计击杀Boss  {TASK1_BOSS_KILLS}/{TASK1_BOSS_KILLS} √"
         else:
             t1_done = hm_boss_kills >= TASK1_BOSS_KILLS
             t1_text = f"任务1：困难模式累计击杀Boss  {min(hm_boss_kills, TASK1_BOSS_KILLS)}/{TASK1_BOSS_KILLS}"
             if t1_done:
-                t1_text += " ✅"
+                t1_text += " √"
         t1_surf = font_small.render(t1_text, True, (100, 255, 100) if t1_done else (190, 190, 200))
         screen.blit(t1_surf, (WIDTH // 2 - task_panel_w // 2 + 16, cur_y))
         cur_y += 22
@@ -2055,12 +2066,12 @@ def show_main_menu():
         # Task 2
         if extreme_mode_permanent:
             t2_done = True
-            t2_text = f"任务2：困难模式驱赶超级猎手  {TASK2_SCARED}/{TASK2_SCARED} ✅"
+            t2_text = f"任务2：困难模式驱赶超级猎手  {TASK2_SCARED}/{TASK2_SCARED} √"
         else:
             t2_done = hm_super_chaser_scared >= TASK2_SCARED
             t2_text = f"任务2：困难模式驱赶超级猎手  {min(hm_super_chaser_scared, TASK2_SCARED)}/{TASK2_SCARED}"
             if t2_done:
-                t2_text += " ✅"
+                t2_text += " √"
         t2_surf = font_small.render(t2_text, True, (100, 255, 100) if t2_done else (190, 190, 200))
         screen.blit(t2_surf, (WIDTH // 2 - task_panel_w // 2 + 16, cur_y))
         cur_y += 22
@@ -2068,19 +2079,19 @@ def show_main_menu():
         # Task 3
         if extreme_mode_permanent:
             t3_done = True
-            t3_text = f"任务3：困难模式单局击杀Boss  {TASK3_MISSION_BOSS}/{TASK3_MISSION_BOSS} ✅"
+            t3_text = f"任务3：困难模式单局击杀Boss  {TASK3_MISSION_BOSS}/{TASK3_MISSION_BOSS} √"
         else:
             t3_done = mission_boss_kills >= TASK3_MISSION_BOSS
             t3_text = f"任务3：困难模式单局击杀Boss  {min(mission_boss_kills, TASK3_MISSION_BOSS)}/{TASK3_MISSION_BOSS}"
             if t3_done:
-                t3_text += " ✅"
+                t3_text += " √"
         t3_surf = font_small.render(t3_text, True, (100, 255, 100) if t3_done else (190, 190, 200))
         screen.blit(t3_surf, (WIDTH // 2 - task_panel_w // 2 + 16, cur_y))
         cur_y += 28
 
         # Advanced tasks (shown after Extreme Mode unlock)
         if extreme_mode_permanent:
-            adv_title = font_small.render("🌟 进阶任务（完成后+15次）", True, (255, 200, 100))
+            adv_title = font_small.render("★ 进阶任务（完成后+15次）", True, (255, 200, 100))
             screen.blit(adv_title, (WIDTH // 2 - adv_title.get_width() // 2, cur_y))
             cur_y += 22
 
@@ -2088,7 +2099,7 @@ def show_main_menu():
             a1_done = adv_boss_kills >= ADV_TASK_BOSS_KILLS
             a1_text = f"进阶1：极难模式击杀Boss  {min(adv_boss_kills, ADV_TASK_BOSS_KILLS)}/{ADV_TASK_BOSS_KILLS}"
             if a1_done:
-                a1_text += " ✅"
+                a1_text += " √"
             a1_surf = font_small.render(a1_text, True, (100, 255, 100) if a1_done else (200, 200, 220))
             screen.blit(a1_surf, (WIDTH // 2 - task_panel_w // 2 + 16, cur_y))
             cur_y += 22
@@ -2097,7 +2108,7 @@ def show_main_menu():
             a2_done = adv_chaser_scared >= ADV_TASK_SCARED
             a2_text = f"进阶2：极难模式驱赶超级猎手  {min(adv_chaser_scared, ADV_TASK_SCARED)}/{ADV_TASK_SCARED}"
             if a2_done:
-                a2_text += " ✅"
+                a2_text += " √"
             a2_surf = font_small.render(a2_text, True, (100, 255, 100) if a2_done else (200, 200, 220))
             screen.blit(a2_surf, (WIDTH // 2 - task_panel_w // 2 + 16, cur_y))
             cur_y += 22
@@ -2106,7 +2117,7 @@ def show_main_menu():
             a3_done = adv_high_extract >= ADV_TASK_HIGH_EXTRACT
             a3_text = f"进阶3：极难模式预估>400撤离  {min(adv_high_extract, ADV_TASK_HIGH_EXTRACT)}/{ADV_TASK_HIGH_EXTRACT}"
             if a3_done:
-                a3_text += " ✅"
+                a3_text += " √"
             a3_surf = font_small.render(a3_text, True, (100, 255, 100) if a3_done else (200, 200, 220))
             screen.blit(a3_surf, (WIDTH // 2 - task_panel_w // 2 + 16, cur_y))
             cur_y += 28
@@ -2122,10 +2133,10 @@ def show_main_menu():
 
     # ---- Main menu message bar (search_message shown here) ----
     if search_message_timer > 0:
-        msg_color = (255, 80, 80) if search_message.startswith("❌") else (100, 220, 255)
+        msg_color = (255, 80, 80) if search_message.startswith("✕") else (100, 220, 255)
         msg_surf = font_small.render(search_message, True, msg_color)
         msg_bg = pygame.Surface((msg_surf.get_width() + 24, msg_surf.get_height() + 12), pygame.SRCALPHA)
-        msg_bg.fill((20, 10, 10, 220) if search_message.startswith("❌") else (10, 20, 40, 200))
+        msg_bg.fill((20, 10, 10, 220) if search_message.startswith("✕") else (10, 20, 40, 200))
         msg_bg.set_alpha(min(255, search_message_timer * 3))
         msg_surf.set_alpha(min(255, search_message_timer * 3))
         screen.blit(msg_bg, (WIDTH // 2 - msg_bg.get_width() // 2, HEIGHT - 80))
@@ -2262,7 +2273,7 @@ def reset_game(reset_score=True):
     bullet_cooldown     = 0
     ammo_bonus          = 0
     bullet_count        = max_bullets
-    search_message = f"⚠ Reset - Ammo: {bullet_count}"
+    search_message = f"! Reset - Ammo: {bullet_count}"
     search_message_timer = 180
     ammo_empty_timer    = 0
     extraction_message  = ""
@@ -2446,7 +2457,7 @@ def spawn_super_chaser():
     scy = max(0.0, min(float(WORLD_H - SUPER_CHASER_SIZE), scy))
     super_chaser = [scx, scy, False]  # [x, y, detected] - invincible, no HP
     # Fullscreen broadcast
-    super_chaser_broadcast = "⚠ Super Chaser inbound!"
+    super_chaser_broadcast = "！超级猎手来袭！"
     super_chaser_broadcast_timer = 180  # 3 seconds
 
 
@@ -2853,14 +2864,14 @@ try:
                     else:               # Up/previous
                         cur_idx = (cur_idx - 1) % len(owned_gun_list)
                     current_gun = owned_gun_list[cur_idx]
-                    search_message = f"切换: {GUN_TYPES[current_gun]['icon']} {GUN_TYPES[current_gun]['name']}"
+                    search_message = f"切换: {GUN_TYPES[current_gun]['name']}"
                     search_message_timer = 60
             if event.type == pygame.KEYDOWN:
                 # ---- Global pause toggle (ESC during gameplay) ----
                 if event.key == pygame.K_ESCAPE and not in_shop and not in_transfer and not in_death_screen and not in_main_menu and not in_settings and not game_over:
                     paused = not paused
                     if paused:
-                        search_message = "⏸ 游戏暂停 | ESC继续 M主菜单 Q退出"
+                        search_message = "游戏暂停 | ESC继续 M主菜单 Q退出"
                         search_message_timer = 0
                     continue
                 # ---- Pause menu keys ----
@@ -2929,13 +2940,13 @@ try:
                         else:
                             # Check selected mode is unlocked before new game
                             if hard_mode_active and not hard_mode_unlocked:
-                                search_message = "❌ 困难模式未解锁！击杀Boss获取信物。"
+                                search_message = "✕ 困难模式未解锁！击杀Boss获取信物。"
                                 search_message_timer = 150
                             elif extreme_mode_active and not extreme_mode_unlocked:
-                                search_message = "❌ 极难模式未解锁！完成P键任务栏目标后解锁。"
+                                search_message = "✕ 极难模式未解锁！完成P键任务栏目标后解锁。"
                                 search_message_timer = 150
                             elif extreme_mode_active and extreme_plays_remaining <= 0:
-                                search_message = f"❌ Extreme mode: {extreme_plays_remaining} plays left! Complete adv tasks for +15."
+                                search_message = f"✕ Extreme mode: {extreme_plays_remaining} plays left! Complete adv tasks for +15."
                                 search_message_timer = 150
                             else:
                                 reset_game(reset_score=False)  # New game restore full save (incl. score)
@@ -3084,10 +3095,10 @@ try:
 
         if paused and not game_over and not in_shop and not in_transfer:
             screen.fill(BG_DARK)
-            screen.blit(font_big.render("已暂停", True, WHITE),
-                        (WIDTH // 2 - font_big.size("PAUSED")[0] // 2, HEIGHT // 2 - 30))
-            screen.blit(font_small.render("P 继续  |  Q 退出  |  5 存档  |  9 读档", True, GRAY),
-                        (WIDTH // 2 - font_small.size("P 继续  |  Q 退出  |  5 存档  |  9 读档")[0] // 2, HEIGHT // 2 + 20))
+            p_title = font_big.render("已暂停", True, WHITE)
+            screen.blit(p_title, (WIDTH // 2 - p_title.get_width() // 2, HEIGHT // 2 - 90))
+            p_hint = font_small.render("P 继续  |  Q 退出  |  5 存档  |  9 读档", True, GRAY)
+            screen.blit(p_hint, (WIDTH // 2 - p_hint.get_width() // 2, HEIGHT // 2 + 10))
             pygame.display.flip()
             continue
 
@@ -3247,7 +3258,7 @@ try:
                 for ki, gn in zip(gun_keys, gun_list):
                     if keys[ki] and gn in owned_guns and current_gun != gn:
                         current_gun = gn
-                        search_message = f"切换: {GUN_TYPES[gn]['icon']} {GUN_TYPES[gn]['name']}"
+                        search_message = f"切换: {GUN_TYPES[gn]['name']}"
                         search_message_timer = 60
             if ammo_empty_timer > 0:
                 ammo_empty_timer -= 1
@@ -3633,7 +3644,7 @@ try:
                                 drop_gun = random.choice(["rifle", "shotgun", "sniper"])
                                 if drop_gun not in owned_guns:
                                     owned_guns.add(drop_gun)
-                                    search_message = f"Boss掉落: {GUN_TYPES[drop_gun]['icon']} {GUN_TYPES[drop_gun]['name']}！"
+                                    search_message = f"Boss掉落: {GUN_TYPES[drop_gun]['name']}！"
                                     search_message_timer = 120
                                     auto_save()  # Persist guns immediately
                             boss_respawn_timer = BOSS_RESPAWN_DELAY
@@ -3721,7 +3732,7 @@ try:
                                 drop_gun = random.choice(["rifle", "shotgun", "sniper"])
                                 if drop_gun not in owned_guns:
                                     owned_guns.add(drop_gun)
-                                    search_message = f"Boss掉落: {GUN_TYPES[drop_gun]['icon']} {GUN_TYPES[drop_gun]['name']}！"
+                                    search_message = f"Boss掉落: {GUN_TYPES[drop_gun]['name']}！"
                                     search_message_timer = 120
                                     auto_save()  # Persist guns immediately
                             boss_respawn_timer = BOSS_RESPAWN_DELAY
@@ -3940,7 +3951,7 @@ try:
                         if stype == "heal":
                             # Blue heal: directly restore lives, no score/backpack
                             lives = min(max_lives, lives + 1)
-                            search_message = "生命+1❤"
+                            search_message = "生命+1♥"
                             search_message_timer = 60
                             supplies.pop(searching_supply)
                             searching_supply = None
@@ -3948,7 +3959,7 @@ try:
                             # Red ammo: replenish ammo supply
                             ammo_bonus = min(5, ammo_bonus + 2)
                             bullet_count = min(max_bullets, bullet_count + 50)
-                            search_message = f"弹药+50 🎯"
+                            search_message = f"弹药+50 ●"
                             search_message_timer = 60
                             supplies.pop(searching_supply)
                             searching_supply = None
@@ -3956,7 +3967,7 @@ try:
                             # Red diamond: likely 10-100, rare 800-2000
                             if random.random() < 0.15:
                                 pts = random.randint(800, 2000)
-                                search_message = f"💎 Super Bonus +{pts}!"
+                                search_message = f"◆ Super Bonus +{pts}!"
                             else:
                                 pts = random.randint(10, 100)
                                 search_message = f"红包 +{pts}"
@@ -4007,7 +4018,7 @@ try:
                             # Heal packs: direct pickup, no search needed
                             if stype == "heal":
                                 lives = min(max_lives, lives + 1)
-                                search_message = "生命+1❤"
+                                search_message = "生命+1♥"
                                 search_message_timer = 60
                                 supplies.pop(nearest_i)
                             else:
