@@ -21,9 +21,11 @@ import shutil
 # ==============================
 pygame.init()
 
+GAME_VERSION = "1.2"
+
 WIDTH, HEIGHT = 1200,800
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("HeliOps - 直升机撤离行动")
+pygame.display.set_caption("HeliOps - 直升机撤离行动 v%s" % GAME_VERSION)
 
 clock = pygame.time.Clock()
 
@@ -370,6 +372,7 @@ cam_y = player_y - HEIGHT // 2
 # Player facing direction tracking
 face_angle = 0  # Player facing angle (degrees)
 move_dx, move_dy = 0, 0  # Movement direction
+player_moving_phase = 0  # Walk-cycle phase; 0 = standing still
 
 # ==============================
 # Supply system
@@ -676,128 +679,360 @@ def on_screen(wx, wy, margin=100):
 
 
 # ==============================
+# v1.2 Pixel-art sprite system
+# ==============================
+# Style: chunky military pixel art -- thick black outline, helmet,
+# camo fatigues, pale face with dark eye slots.
+# Grids are ASCII; '.' = transparent. 1 logical px = SPR_SCALE screen px.
+# SPR_SCALE=1 -> pixel-exact 18x32 sprite (very small on a 1200x800 screen).
+# SPR_SCALE=2 -> chunky 36x64 sprite, much more readable; this is what v1.2 ships.
+SPR_SCALE = 2
+
+# char -> colour. Each unit may override any key (see SPR_TINT).
+SPR_PAL = {
+    ".": None,
+    "#": (18, 18, 22),                       # outline
+    "h": (96, 100, 108), "H": (146, 152, 162), "s": (58, 60, 68),   # helmet
+    "f": (242, 232, 212), "k": (26, 26, 30), "m": (26, 26, 30),     # face / eyes / mouth
+    "o": (104, 116, 68), "O": (70, 80, 48),                         # camo olive
+    "b": (114, 86, 52), "B": (78, 58, 38),                          # camo brown
+    "v": (40, 42, 50), "t": (28, 28, 34), "y": (120, 126, 138),     # vest/boot/gun
+    "D": (72, 58, 92), "d": (46, 36, 62), "A": (56, 46, 74),        # boss armour
+    "I": (32, 24, 42), "J": (255, 92, 40), "G": (255, 200, 60),     # boss visor / eye / gold
+}
+
+# ---- Player, front (18 x 32) ----
+_SPR_PF = [
+    "......######......",
+    "....##hhhhhh##....",
+    "...#hhhhhhhhhh#...",
+    "..#hhhhhhhhhhhh#..",
+    ".#hHHHHHHHHHHHHh#.",
+    ".#hhhhhhhhhhhhhh#.",
+    ".#ssssssssssssss#.",
+    "..##############..",
+    "...#ffffffffff#...",
+    "...#ffkkffkkff#...",
+    "...#ffffffffff#...",
+    "...#fffmmmmfff#...",
+    "....#ffffffff#....",
+    ".....########.....",
+    ".......#vv#.......",
+    "..##############..",
+    ".#oo##oooooo##oo#.",
+    ".#oo##oooooo##oo#.",
+    ".#oo##oobboo##oo#.",
+    ".#oo##oobboo##oo#.",
+    ".#oo##vOOOOv##oo#.",
+    ".#oo##vOOOOv##oo#.",
+    ".#oo##oooooo##oo#.",
+    ".#oo##oobbbo##oo#.",
+    ".#oo##oooooo##oo#.",
+    "..##############..",
+]
+_SPR_PF_LEGS = [
+    [
+        "...##oo####oo##...",
+        "...##oo####oo##...",
+        "...##oo####oo##...",
+        "...##tt####tt##...",
+        "...##tt####tt##...",
+        "...####....####...",
+    ],
+    [
+        "...##oo####oo##...",
+        "..##oo#....#oo##..",
+        "..##oo#....#oo##..",
+        "..###tt#..#tt###..",
+        "..##tt#....#tt##..",
+        "..####......####..",
+    ],
+]
+
+# ---- Player, back ----
+_SPR_PB = [
+    "......######......",
+    "....##hhhhhh##....",
+    "...#hhhhhhhhhh#...",
+    "..#hhhhhhhhhhhh#..",
+    ".#hssssssssssssh#.",
+    ".#hhhhhhhhhhhhhh#.",
+    ".#hhhhhhhhhhhhhh#.",
+    "..##############..",
+    "...#hhhhhhhhhh#...",
+    "...#hhhhhhhhhh#...",
+    "...#hhhhhhhhhh#...",
+    "...#hhhhhhhhhh#...",
+    "....#hhhhhhhh#....",
+    ".....########.....",
+    ".......#vv#.......",
+    "..##############..",
+    ".#oo#vvvvvvvv#oo#.",
+    ".#oo#vvvvvvvv#oo#.",
+    ".#oo#vOOOOOOv#oo#.",
+    ".#oo#vOooooOv#oo#.",
+    ".#oo#vOooooOv#oo#.",
+    ".#oo#vOOOOOOv#oo#.",
+    ".#oo#vvvvvvvv#oo#.",
+    ".#oo#oooooooo#oo#.",
+    ".#oo#oobbbboo#oo#.",
+    "..##############..",
+]
+
+# ---- Player, side (facing right) ----
+_SPR_PS = [
+    ".....#####........",
+    "....#hhhhh#.......",
+    "...#hhhhhhh#......",
+    "..#hhhhhhhhh#.....",
+    "..#hHHHHHHHh#.....",
+    "..#hhhhhhhhh#.....",
+    "..#sssssssss#.....",
+    "..############....",
+    "..#sssffffff#.....",
+    "..#sssffffkk#.....",
+    "..#sssffffff#.....",
+    "..#sssfffmm#......",
+    "...#ssffff#.......",
+    "....######........",
+    "......#vv#........",
+    "..############....",
+    ".#oo#oooooo#oo#...",
+    ".#oo#oooooo#oo#...",
+    ".#oo#oobbboo#oo#..",
+    ".#oo#oobbboo#oo#yy",
+    ".#oo#vOOOOOv#oo#yy",
+    ".#oo#vOOOOOv#oo#..",
+    ".#oo#ooooooo#oo#..",
+    ".#oo#oobbbbo#oo#..",
+    ".#oo#ooooooo#oo#..",
+    "..##############..",
+]
+
+# ---- Boss, front (30 x 44) ----
+_SPR_BF = [
+    "...........########...........",
+    ".........##DDDDDDDD##.........",
+    ".......#DDDDDDDDDDDDDD#.......",
+    "......#DDDDDDDDDDDDDDDD#......",
+    ".....#DDDDDDDDDDDDDDDDDD#.....",
+    ".....#DDDDDDDDDDDDDDDDDD#.....",
+    ".....#dddddddddddddddddd#.....",
+    ".....#dddddddddddddddddd#.....",
+    "......#dddddddddddddddd#......",
+    "......##################......",
+    ".......#IIIIIIIIIIIIII#.......",
+    ".......#IJJIIIIIIIIJJI#.......",
+    ".......#IJJIIIIIIIIJJI#.......",
+    ".......#IIIIIIIIIIIIII#.......",
+    "........##############........",
+    "..............##..............",
+    "....######################....",
+    "...##AA#DDDDDDDDDDDDDD#AA##...",
+    "...##AA#DDDGGGGGGGGDDD#AA##...",
+    "...##AA#DDDDGGGGDDDDDD#AA##...",
+    "...##AA#DDDDDDDDDDDDDD#AA##...",
+    "...##AA#DDDDDDDDDDDDDD#AA##...",
+    "...##AA#DDDDDDDDDDDDDD#AA##...",
+    "...##AA#DDDDDDDDDDDDDD#AA##...",
+    "...##AA#DDDDDDDDDDDDDD#AA##...",
+    "....######################....",
+    "....###DDDD######DDDD###......",
+    "....###DDDD######DDDD###......",
+    "....###DDDD######DDDD###......",
+    "....###DDDD######DDDD###......",
+    "....###dddd######dddd###......",
+    "....###dddd######dddd###......",
+    "....#######......#######......",
+    "....#######......#######......",
+    "..............................",
+]
+
+_SPR_BOSS_LEGS = [
+    ["....###DDDD######DDDD###......",
+     "....###DDDD######DDDD###......",
+     "....###DDDD######DDDD###......",
+     "....###DDDD######DDDD###......",
+     "....###dddd######dddd###......",
+     "....###dddd######dddd###......",
+     "....#######......#######......",
+     "....#######......#######......"],
+    ["....###DDDD######DDDD###......",
+     "....###DDDD######DDDD###......",
+     "...###DDDD#######DDDD###......",
+     "...###DDDD#######DDDD###......",
+     "...###dddd#######dddd###......",
+     "...###dddd#######dddd###......",
+     "...#######.......#######......",
+     "...#######.......#######......"],
+]
+
+# unit -> {pose: (body_rows, [leg_frame_a, leg_frame_b])}
+SPR_UNITS = {
+    "player": {"front": (_SPR_PF, _SPR_PF_LEGS),
+               "back":  (_SPR_PB, _SPR_PF_LEGS),
+               "side":  (_SPR_PS, _SPR_PF_LEGS)},
+    "enemy":  {"front": (_SPR_PF, _SPR_PF_LEGS),
+               "back":  (_SPR_PB, _SPR_PF_LEGS),
+               "side":  (_SPR_PS, _SPR_PF_LEGS)},
+    "chaser": {"front": (_SPR_PF, _SPR_PF_LEGS),
+               "back":  (_SPR_PB, _SPR_PF_LEGS),
+               "side":  (_SPR_PS, _SPR_PF_LEGS)},
+    "super":  {"front": (_SPR_PF, _SPR_PF_LEGS),
+               "back":  (_SPR_PB, _SPR_PF_LEGS),
+               "side":  (_SPR_PS, _SPR_PF_LEGS)},
+    "boss":   {"front": (_SPR_BF, _SPR_BOSS_LEGS),
+               "side":  (_SPR_BF, _SPR_BOSS_LEGS),
+               "back":  (_SPR_BF, _SPR_BOSS_LEGS)},
+}
+
+# Per-unit palette overrides.
+#   enemy  -> dark helmet, red visor eyes, dusty-red fatigues
+#   chaser -> orange band + orange fatigues (elite hunter)
+#   super  -> green band + green fatigues (invincible elite)
+SPR_TINT = {
+    "player": {},
+    "enemy": {
+        "h": (74, 76, 82), "H": (102, 104, 110), "s": (46, 48, 54),
+        "f": (38, 30, 32), "k": (238, 78, 62), "m": (38, 30, 32),
+        "o": (128, 74, 62), "O": (92, 50, 44), "b": (104, 66, 56), "B": (72, 44, 40),
+        "v": (52, 46, 50), "t": (30, 26, 28),
+    },
+    "chaser": {
+        "h": (86, 74, 60), "H": (255, 150, 40), "s": (54, 46, 38),
+        "f": (44, 32, 30), "k": (255, 190, 60), "m": (44, 32, 30),
+        "o": (198, 108, 36), "O": (146, 76, 26), "b": (150, 96, 44), "B": (104, 64, 32),
+        "v": (64, 44, 34), "t": (36, 28, 26),
+    },
+    "super": {
+        "h": (62, 84, 68), "H": (90, 255, 130), "s": (40, 58, 46),
+        "f": (26, 44, 34), "k": (140, 255, 170), "m": (26, 44, 34),
+        "o": (66, 170, 88), "O": (40, 122, 62), "b": (52, 140, 92), "B": (34, 96, 64),
+        "v": (36, 64, 48), "t": (24, 40, 30),
+    },
+    "boss": {},
+}
+
+# Enemy state -> vest accent colour (kept from the old colour language)
+SPR_ENEMY_STATE_COLOR = {
+    "patrol": (52, 46, 50),
+    "alert":  (255, 180, 60),
+    "chase":  (255, 60, 50),
+    "tired":  (110, 110, 120),
+}
+
+_spr_cache = {}
+
+
+def _glow01(t_ms, speed, steps=8):
+    """Pulse in [0,1], quantised to `steps` levels.
+
+    IMPORTANT: glow colours are part of the sprite cache key. If they were
+    continuous, every frame would mint a new cache entry (unbounded growth),
+    so the pulse is quantised to a handful of discrete colours.
+    """
+    v = abs(math.sin(t_ms * speed)) * 0.5 + 0.5
+    return round(v * steps) / steps
+
+
+def _spr_make(rows, pal, scale):
+    w = max(len(r) for r in rows)
+    h = len(rows)
+    surf = pygame.Surface((w, h), pygame.SRCALPHA)
+    for y, row in enumerate(rows):
+        pad = (w - len(row)) // 2
+        for x, ch in enumerate(row):
+            col = pal.get(ch)
+            if col is not None:
+                surf.set_at((x + pad, y), col)
+    if scale != 1:
+        surf = pygame.transform.scale(surf, (w * scale, h * scale))
+    return surf
+
+
+def get_sprite(unit, pose, frame=0, extra_tint=None, flip=False):
+    """Build (and cache) a unit sprite surface."""
+    key = (unit, pose, frame, flip, tuple(sorted((extra_tint or {}).items())))
+    surf = _spr_cache.get(key)
+    if surf is not None:
+        return surf
+    body, legs = SPR_UNITS[unit][pose]
+    rows = list(body) + list(legs[frame % len(legs)])
+    pal = dict(SPR_PAL)
+    pal.update(SPR_TINT.get(unit, {}))
+    if extra_tint:
+        pal.update(extra_tint)
+    surf = _spr_make(rows, pal, SPR_SCALE)
+    if flip:
+        surf = pygame.transform.flip(surf, True, False)
+    _spr_cache[key] = surf
+    return surf
+
+
+def _pose_and_flip(angle):
+    """Movement angle (deg, 0=right / 90=down) -> (pose, flip)."""
+    if -45 <= angle < 45:
+        return "side", False
+    if 45 <= angle < 135:
+        return "front", False
+    if angle >= 135 or angle < -135:
+        return "side", True
+    return "back", False
+
+
+def _walk_frame(phase):
+    return int(phase) % 2
+
+
+def blit_unit(unit, pose, sx, sy, box_w, box_h, frame=0,
+              extra_tint=None, flip=False, foot_align=True):
+    """Blit a unit sprite centred on the entity box (sx, sy, box_w, box_h)."""
+    spr = get_sprite(unit, pose, frame, extra_tint, flip)
+    px = int(sx + box_w // 2 - spr.get_width() // 2)
+    if foot_align:
+        py = int(sy + box_h - spr.get_height())      # feet on the box bottom
+    else:
+        py = int(sy + box_h // 2 - spr.get_height() // 2)
+    screen.blit(spr, (px, py))
+    return spr
+
+
+# ==============================
 # Helper functions
 # ==============================
 def draw_player(wx, wy):
-    """Draw player character (geometric style + rotation)"""
+    """Draw player (v1.2 pixel sprite, 4-directional)."""
     sx, sy = w2s(wx, wy)
-    cx, cy = player_size // 2, player_size // 2
-    
-    # Create temporary surface (with alpha channel)
-    surf = pygame.Surface((player_size, player_size), pygame.SRCALPHA)
-    
-    # ---- Draw character (base direction: facing right) ----
-    # 1. Head (skin-colored circle)
-    head_cx, head_cy = cx, cy - 10
-    pygame.draw.circle(surf, (255, 220, 180), (head_cx, head_cy), 6)
-    # Eyes
-    pygame.draw.circle(surf, (50, 50, 50), (head_cx + 2, head_cy - 1), 1)
-    
-    # 2. Body (blue rectangle)
-    body_rect = pygame.Rect(cx - 6, cy - 4, 12, 16)
-    pygame.draw.rect(surf, (50, 160, 255), body_rect, border_radius=3)
-    # Clothing texture (vertical line)
-    pygame.draw.line(surf, (30, 120, 220), (cx, cy - 4), (cx, cy + 12), 1)
-    
-    # 3. Right arm (holding gun)
-    arm_r_x, arm_r_y = cx + 6, cy
-    pygame.draw.line(surf, (255, 220, 180), (cx + 4, cy + 2), (arm_r_x, arm_r_y), 3)
-    # Gun barrel (changes appearance based on weapon type)
-    gun = GUN_TYPES[current_gun]
-    gun_color = gun["color"]
-    if current_gun == "pistol":
-        gun_x = arm_r_x + 8
-        pygame.draw.line(surf, gun_color, (arm_r_x, arm_r_y), (gun_x, arm_r_y + 1), 3)
-        pygame.draw.rect(surf, (100, 100, 120), (gun_x - 2, arm_r_y - 2, 6, 4))
-    elif current_gun == "rifle":
-        gun_x = arm_r_x + 12
-        pygame.draw.line(surf, gun_color, (arm_r_x, arm_r_y), (gun_x, arm_r_y), 2)
-        pygame.draw.rect(surf, gun_color, (arm_r_x + 4, arm_r_y - 2, 6, 4))
-        pygame.draw.rect(surf, (80, 60, 30), (arm_r_x + 3, arm_r_y - 3, 9, 6), border_radius=1)
-    elif current_gun == "shotgun":
-        gun_x = arm_r_x + 10
-        pygame.draw.line(surf, gun_color, (arm_r_x, arm_r_y), (gun_x, arm_r_y + 1), 4)
-        pygame.draw.rect(surf, gun_color, (gun_x - 3, arm_r_y - 2, 7, 5), border_radius=1)
-    elif current_gun == "sniper":
-        gun_x = arm_r_x + 14
-        pygame.draw.line(surf, gun_color, (arm_r_x, arm_r_y), (gun_x, arm_r_y), 2)
-        pygame.draw.rect(surf, gun_color, (arm_r_x + 2, arm_r_y - 2, 10, 4))
-        pygame.draw.circle(surf, (200, 200, 255), (arm_r_x + 8, arm_r_y), 3)
-    
-    # 4. Left arm (relaxed)
-    pygame.draw.line(surf, (255, 220, 180), (cx - 4, cy + 2), (cx - 8, cy + 8), 3)
-    
-    # 5. Legs (walking animation)
-    walk_phase = pygame.time.get_ticks() * 0.01
-    leg_swing = math.sin(walk_phase) * 8
-    
-    # Right leg
-    leg_r_x = cx + 4 + leg_swing
-    pygame.draw.line(surf, (40, 60, 120), (cx + 3, cy + 12), (leg_r_x, cy + 22), 3)
-    # Shoes
-    pygame.draw.circle(surf, (30, 30, 30), (int(leg_r_x), int(cy + 22)), 2)
-    
-    # Left leg
-    leg_l_x = cx - 4 - leg_swing
-    pygame.draw.line(surf, (40, 60, 120), (cx - 3, cy + 12), (leg_l_x, cy + 22), 3)
-    # Shoes
-    pygame.draw.circle(surf, (30, 30, 30), (int(leg_l_x), int(cy + 22)), 2)
-    
-    # ---- Rotate surface ----
-    if face_angle != 0:
-        rotated = pygame.transform.rotate(surf, -face_angle)
-        rx, ry = rotated.get_rect().center
-        screen.blit(rotated, (sx + cx - rx, sy + cy - ry))
-    else:
-        screen.blit(surf, (sx, sy))
+    pose, flip = _pose_and_flip(face_angle)
+    moving = (player_moving_phase > 0)
+    frame = _walk_frame(player_moving_phase / 7.0) if moving else 0
+    blit_unit("player", pose, sx, sy, player_size, player_size, frame, flip=flip)
+
 
 def draw_enemy(ewx, ewy, state):
     sx, sy = w2s(ewx, ewy)
-    cx, cy = sx + enemy_size // 2, sy + enemy_size // 2
-    
-    # Select color based on state
+
+    # v1.2 pixel sprite. Vest stripe carries the alert-state colour.
+    tint = {"v": SPR_ENEMY_STATE_COLOR.get(state, SPR_ENEMY_STATE_COLOR["patrol"])}
     if state == "chase":
-        body_color = ENEMY_ALERT
-    elif state == "alert":
-        body_color = (255, 180, 100)
-    elif state == "tired":
-        body_color = (120, 120, 130)
+        ang = math.degrees(math.atan2(
+            (player_y + player_size / 2) - (ewy + enemy_size / 2),
+            (player_x + player_size / 2) - (ewx + enemy_size / 2)))
+        pose, flip = _pose_and_flip(ang)
     else:
-        body_color = ENEMY_COLOR
-    
-    # 1. Head (dark red circle)
-    head_radius = 5
-    pygame.draw.circle(screen, (200, 50, 50), (cx, cy - 9), head_radius)
-    # Eyes
-    pygame.draw.circle(screen, (50, 50, 50), (cx + 2, cy - 10), 1)
-    
-    # 2. Body (red rectangle)
-    body_h = 14
-    body_top = cy - 4
-    pygame.draw.rect(screen, body_color, (cx - 5, body_top, 10, body_h), border_radius=2)
-    
-    # 3. Arms (two line segments)
-    # Right arm (holding gun)
-    pygame.draw.line(screen, (200, 50, 50), (cx + 5, cy), (cx + 9, cy + 4), 2)
-    # Gun barrel
-    pygame.draw.line(screen, (100, 100, 120), (cx + 9, cy + 4), (cx + 16, cy + 4), 2)
-    pygame.draw.rect(screen, (80, 80, 100), (cx + 14, cy + 2, 5, 5), border_radius=1)
-    # Left arm
-    pygame.draw.line(screen, (200, 50, 50), (cx - 5, cy), (cx - 9, cy + 4), 2)
-    
-    # 4. Legs (two line segments)
-    # Right leg
-    pygame.draw.line(screen, (80, 30, 30), (cx + 3, cy + body_h), (cx + 5, cy + body_h + 8), 2)
-    # Left leg
-    pygame.draw.line(screen, (80, 30, 30), (cx - 3, cy + body_h), (cx - 5, cy + body_h + 8), 2)
-    
-    # State indicator (preserve existing logic)
+        pose, flip = "front", False
+    frame = int(pygame.time.get_ticks() / 170 + ewx * 0.03) % 2
+    spr = blit_unit("enemy", pose, sx, sy, enemy_size, enemy_size, frame,
+                    extra_tint=tint, flip=flip)
+    sp_top = sy + enemy_size - spr.get_height()
+
+    # State indicator (floats just above the sprite)
     if state == "chase":
         warn_text = font_small.render("!", True, (255, 50, 50))
-        screen.blit(warn_text, (sx + enemy_size // 2 - 3, sy - 22))
+        screen.blit(warn_text, (sx + enemy_size // 2 - 3, sp_top - 20))
     elif state == "tired":
         zzz_text = font_small.render("Z", True, GRAY)
-        screen.blit(zzz_text, (sx + enemy_size // 2 - 3, sy - 22))
+        screen.blit(zzz_text, (sx + enemy_size // 2 - 3, sp_top - 20))
 
 def draw_supply(swx, swy, stype, searching=False):
     sx, sy = w2s(swx, swy)
@@ -943,74 +1178,25 @@ def draw_boss(b):
     # Walking animation phase
     walk = math.sin(t_ms * 0.006) * 0.4
 
-    # -- Legs --
-    leg_color = (60, 30, 100)
-    leg_w = bs // 7
-    body_bottom = sy + bs * 2 // 3
-    # Left leg
-    lleg_off = int(walk * bs * 0.15)
-    pygame.draw.rect(screen, leg_color,
-                     (cx - leg_w * 2, body_bottom, leg_w + 2, bs // 3 + lleg_off), border_radius=3)
-    # Right leg
-    rleg_off = int(-walk * bs * 0.15)
-    pygame.draw.rect(screen, leg_color,
-                     (cx + leg_w, body_bottom, leg_w + 2, bs // 3 + rleg_off), border_radius=3)
+    # v1.2 pixel sprite (boss always faces the camera)
+    pulse = _glow01(t_ms, 0.005)
+    eye = (255, int(60 + 120 * pulse), 30)
+    frame = int(t_ms / 200) % 2
+    spr = blit_unit("boss", "front", sx, sy, bs, bs, frame,
+                    extra_tint={"J": eye})
 
-    # -- Body --
-    body_color = (30, 20, 60)
-    body_rect = pygame.Rect(cx - bs // 3, sy + bs // 4, bs * 2 // 3, bs * 5 // 12)
-    pygame.draw.rect(screen, body_color, body_rect, border_radius=4)
-    # Gold emblem (chest X)
-    c1x = body_rect.left + 4
-    c1y = body_rect.top + 4
-    c2x = body_rect.right - 4
-    c2y = body_rect.bottom - 4
-    pygame.draw.line(screen, (255, 200, 40), (c1x, c1y), (c2x, c2y), 2)
-    pygame.draw.line(screen, (255, 200, 40), (c2x, c1y), (c1x, c2y), 2)
-
-    # -- Arms --
-    arm_color = (30, 20, 60)
-    arm_offset = int(walk * bs * 0.12)
-    # Left arm
-    pygame.draw.rect(screen, arm_color,
-                     (cx - bs // 3 - bs // 8, sy + bs // 4, bs // 8, bs * 5 // 16 - arm_offset),
-                     border_radius=3)
-    # Right arm (holding weapon)
-    pygame.draw.rect(screen, arm_color,
-                     (cx + bs // 3, sy + bs // 4, bs // 8, bs * 5 // 16 + arm_offset),
-                     border_radius=3)
-    # Gun (right arm tip)
-    gun_x = cx + bs // 3 + bs // 8 - 2
-    gun_y = sy + bs // 4 + bs * 5 // 16 + arm_offset
-    pygame.draw.rect(screen, (60, 60, 60), (gun_x - 1, gun_y, 3, 10), border_radius=1)
-
-    # -- Head --
-    head_r = bs // 5
-    head_cx = cx
-    head_cy = sy + bs // 4 - head_r + 2
-    # Hat base
-    pygame.draw.rect(screen, (20, 10, 40),
-                     (head_cx - head_r - 3, head_cy - 4, head_r * 2 + 6, 5))
-    # Hat cylinder
-    pygame.draw.rect(screen, (20, 10, 40),
-                     (head_cx - head_r + 2, head_cy - 4 - head_r, head_r * 2 - 4, head_r + 2))
-    # Face
-    pygame.draw.circle(screen, (200, 160, 120), (head_cx, head_cy), head_r)
-    # Glowing eyes (orange-red)
-    eye_glow = abs(math.sin(t_ms * 0.005)) * 0.5 + 0.5
-    eye_col = (int(255 * eye_glow), int(80 * eye_glow), 0)
-    pygame.draw.circle(screen, eye_col, (head_cx - head_r // 3, head_cy), 3)
-    pygame.draw.circle(screen, eye_col, (head_cx + head_r // 3, head_cy), 3)
-
-    # -- Gold border aura --
+    # -- Gold border aura (wraps the sprite) --
+    sp_top = sy + bs - spr.get_height()
+    sp_left = sx + bs // 2 - spr.get_width() // 2
     pygame.draw.rect(screen, (255, 200, 40),
-                     (sx, sy, bs, bs + bs // 3), 3, border_radius=6)
+                     (sp_left - 4, sp_top - 4, spr.get_width() + 8, spr.get_height() + 10), 3,
+                     border_radius=6)
 
     # HP bar
-    bar_w = bs
+    bar_w = spr.get_width()
     bar_h = 6
-    bar_x = sx
-    bar_y = sy - 14
+    bar_x = sp_left
+    bar_y = sp_top - 22
     boss_max_hp = b[5] if len(b) > 5 else BOSS_MAX_HP
     hp_ratio = max(0, bhp / boss_max_hp)
     pygame.draw.rect(screen, (40, 10, 10), (bar_x, bar_y, bar_w, bar_h), border_radius=2)
@@ -1026,7 +1212,7 @@ def draw_boss(b):
 
     # BOSS label
     boss_label = font_small.render("BOSS", True, (255, 50, 50))
-    screen.blit(boss_label, (sx + bs // 2 - boss_label.get_width() // 2, sy - 30))
+    screen.blit(boss_label, (sx + bs // 2 - boss_label.get_width() // 2, bar_y - 20))
 
 def draw_chaser(c):
     """Draw Chaser character: orange-red hunter + tracking line + lock-on indicator"""
@@ -1053,66 +1239,31 @@ def draw_chaser(c):
     to_py = psy - cy
     face_dir = 1 if to_px >= 0 else -1
 
-    # -- Legs --
-    leg_color = (150, 60, 20)
-    leg_w = cs // 7
-    body_bottom = sy + cs * 2 // 3
-    lleg_off = int(walk * cs * 0.18)
-    rleg_off = int(-walk * cs * 0.18)
-    pygame.draw.rect(screen, leg_color,
-                     (cx - leg_w * 2, body_bottom, leg_w + 1, cs // 3 + lleg_off), border_radius=2)
-    pygame.draw.rect(screen, leg_color,
-                     (cx + leg_w, body_bottom, leg_w + 1, cs // 3 + rleg_off), border_radius=2)
-
-    # -- Body --
-    body_color = CHASER_COLOR
-    body_rect = pygame.Rect(cx - cs // 3, sy + cs // 4, cs * 2 // 3, cs * 5 // 12)
-    pygame.draw.rect(screen, body_color, body_rect, border_radius=4)
-    # Body pulse border when locked on
+    # v1.2 pixel sprite: orange elite hunter, eyes glow when locked on
+    ang = math.degrees(math.atan2(to_py, to_px))
+    pose, flip = _pose_and_flip(ang)
+    if detected:
+        g = _glow01(t_ms, 0.01)
+        eye = (255, int(120 + 110 * g), int(60 * g))
+    else:
+        eye = (255, 190, 60)
+    frame = int(t_ms / 130 + cx_w * 0.03) % 2
+    spr = blit_unit("chaser", pose, sx, sy, cs, cs, frame,
+                    extra_tint={"k": eye}, flip=flip)
     if detected:
         pulse = abs(math.sin(t_ms * 0.008)) * 0.6 + 0.4
-        border_col = (255, int(200 * pulse), int(60 * pulse))
-        pygame.draw.rect(screen, border_col, body_rect, 2, border_radius=4)
+        box = pygame.Rect(sx + cs // 2 - spr.get_width() // 2,
+                          sy + cs - spr.get_height(),
+                          spr.get_width(), spr.get_height()).inflate(6, 6)
+        pygame.draw.rect(screen, (255, int(200 * pulse), int(60 * pulse)), box, 2,
+                         border_radius=4)
 
-    # -- Arms --
-    arm_color = (180, 80, 30)
-    arm_off = int(walk * cs * 0.12)
-    pygame.draw.rect(screen, arm_color,
-                     (cx - cs // 3 - cs // 8, sy + cs // 4, cs // 8, cs * 5 // 16 - arm_off),
-                     border_radius=2)
-    pygame.draw.rect(screen, arm_color,
-                     (cx + cs // 3, sy + cs // 4, cs // 8, cs * 5 // 16 + arm_off),
-                     border_radius=2)
-    # Dagger (right arm tip)
-    knife_x = cx + cs // 3 + cs // 8 - 1
-    knife_y = sy + cs // 4 + cs * 5 // 16 + arm_off
-    pygame.draw.rect(screen, (200, 200, 220), (knife_x - 1, knife_y, 2, 8), border_radius=1)
-    pygame.draw.polygon(screen, (180, 180, 200),
-                        [(knife_x - 2, knife_y + 8), (knife_x + 2, knife_y + 8), (knife_x, knife_y + 14)])
-
-    # -- Head --
-    head_r = cs // 5
-    head_cx = cx
-    head_cy = sy + cs // 4 - head_r + 2
-    pygame.draw.circle(screen, (220, 170, 120), (head_cx, head_cy), head_r)
-    # Headband
-    pygame.draw.arc(screen, (180, 60, 20),
-                    pygame.Rect(head_cx - head_r, head_cy - head_r, head_r * 2, head_r * 2),
-                    0, math.pi, 4)
-    # Eyes (glow when locked)
-    if detected:
-        eye_glow = abs(math.sin(t_ms * 0.01)) * 0.5 + 0.5
-        eye_col = (int(255 * eye_glow), int(120 * eye_glow), 0)
-    else:
-        eye_col = (60, 40, 20)
-    pygame.draw.circle(screen, eye_col, (head_cx - head_r // 3, head_cy), 2)
-    pygame.draw.circle(screen, eye_col, (head_cx + head_r // 3, head_cy), 2)
-
-    # HP bar
-    bar_w = cs
+    # HP bar (sits just above the sprite)
+    sp_top = sy + cs - spr.get_height()
+    bar_w = spr.get_width()
     bar_h = 4
-    bar_x = sx
-    bar_y = sy - 10
+    bar_x = sx + cs // 2 - bar_w // 2
+    bar_y = sp_top - 12
     hp_ratio = max(0, chp / (CHASER_HP * _dm(HM_CHASER_MULT, EM_CHASER_MULT)))
     pygame.draw.rect(screen, (30, 10, 5), (bar_x, bar_y, bar_w, bar_h), border_radius=2)
     hp_color = (255, 80, 40) if hp_ratio > 0.3 else (255, 20, 20)
@@ -1122,7 +1273,7 @@ def draw_chaser(c):
     # Label
     label = font_small.render("猎手" if detected else "?", True,
                               (255, 200, 100) if detected else GRAY)
-    screen.blit(label, (sx + cs // 2 - label.get_width() // 2, sy - 24))
+    screen.blit(label, (sx + cs // 2 - label.get_width() // 2, bar_y - 22))
 
     # Tracking line when target acquired
     if detected:
@@ -1185,78 +1336,29 @@ def draw_super_chaser(sc):
                            (radius, radius), radius, 2)
         screen.blit(glow, (cx - radius, cy - radius))
 
-    # -- Legs --
-    leg_color = (30, 120, 50)
-    leg_w = ss // 7
-    body_bottom = sy + ss * 2 // 3
-    lleg_off = int(walk * ss * 0.18)
-    rleg_off = int(-walk * ss * 0.18)
-    pygame.draw.rect(screen, leg_color,
-                     (cx - leg_w * 2, body_bottom, leg_w + 1, ss // 3 + lleg_off), border_radius=2)
-    pygame.draw.rect(screen, leg_color,
-                     (cx + leg_w, body_bottom, leg_w + 1, ss // 3 + rleg_off), border_radius=2)
-
-    # -- Body (green armor) --
-    body_color = SUPER_CHASER_COLOR
-    body_rect = pygame.Rect(cx - ss // 3, sy + ss // 4, ss * 2 // 3, ss * 5 // 12)
-    pygame.draw.rect(screen, body_color, body_rect, border_radius=4)
-    # Armor texture
+    # v1.2 pixel sprite: green elite, eyes pulse when locked on
+    ang = math.degrees(math.atan2(psy - cy, psx - cx))
+    pose, flip = _pose_and_flip(ang)
+    eye_glow = _glow01(t_ms, 0.012)
+    eye_col = (int(120 + 135 * eye_glow), 255, int(90 * eye_glow))
+    frame = int(t_ms / 130 + scx_w * 0.03) % 2
+    spr = blit_unit("super", pose, sx, sy, ss, ss, frame,
+                    extra_tint={"k": eye_col}, flip=flip)
     if detected:
         pulse2 = abs(math.sin(t_ms * 0.01)) * 0.6 + 0.4
-        border_col = (int(80 * pulse2 + 100), int(255 * pulse2), int(100 * pulse2 + 60))
-    else:
-        border_col = (80, 200, 100)
-    pygame.draw.rect(screen, border_col, body_rect, 2, border_radius=4)
-    # Chest cross emblem
-    mx = body_rect.centerx
-    my = body_rect.centery
-    pygame.draw.line(screen, (150, 255, 160), (mx, my - 6), (mx, my + 6), 2)
-    pygame.draw.line(screen, (150, 255, 160), (mx - 6, my), (mx + 6, my), 2)
+        box = pygame.Rect(sx + ss // 2 - spr.get_width() // 2,
+                          sy + ss - spr.get_height(),
+                          spr.get_width(), spr.get_height()).inflate(6, 6)
+        pygame.draw.rect(screen, (int(80 * pulse2 + 100), int(255 * pulse2),
+                                  int(100 * pulse2 + 60)), box, 2, border_radius=4)
 
-    # -- Arms --
-    arm_color = (40, 140, 60)
-    arm_off = int(walk * ss * 0.12)
-    pygame.draw.rect(screen, arm_color,
-                     (cx - ss // 3 - ss // 8, sy + ss // 4, ss // 8, ss * 5 // 16 - arm_off),
-                     border_radius=2)
-    pygame.draw.rect(screen, arm_color,
-                     (cx + ss // 3, sy + ss // 4, ss // 8, ss * 5 // 16 + arm_off),
-                     border_radius=2)
-    # Long blade (right arm tip)
-    blade_x = cx + ss // 3 + ss // 8 - 1
-    blade_y = sy + ss // 4 + ss * 5 // 16 + arm_off
-    pygame.draw.rect(screen, (180, 220, 190), (blade_x - 1, blade_y, 2, 12), border_radius=1)
-    # Blade tip
-    pygame.draw.polygon(screen, (220, 255, 230),
-                        [(blade_x - 2, blade_y + 12),
-                         (blade_x + 2, blade_y + 12),
-                         (blade_x, blade_y + 18)])
-
-    # -- Head (military helmet) --
-    head_r = ss // 5
-    head_cx = cx
-    head_cy = sy + ss // 4 - head_r + 2
-    pygame.draw.circle(screen, (200, 160, 110), (head_cx, head_cy), head_r)
-    # Helmet
-    helmet_color = (30, 120, 50)
-    pygame.draw.arc(screen, helmet_color,
-                    pygame.Rect(head_cx - head_r - 1, head_cy - head_r - 1,
-                                (head_r + 1) * 2, (head_r + 1) * 2),
-                    0.1, math.pi - 0.1, head_r + 1)
-    pygame.draw.rect(screen, helmet_color,
-                     (head_cx - head_r - 1, head_cy - 3, (head_r + 1) * 2, 5), border_radius=1)
-    # Glowing eyes (green)
-    eye_glow = abs(math.sin(t_ms * 0.012)) * 0.5 + 0.5
-    eye_col = (0, int(200 + 55 * eye_glow), int(60 * eye_glow))
-    pygame.draw.circle(screen, eye_col, (head_cx - head_r // 3, head_cy + 1), 2)
-    pygame.draw.circle(screen, eye_col, (head_cx + head_r // 3, head_cy + 1), 2)
-
-    # Invincible + Super Chaser labels
+    # Invincible + Super Chaser labels (stacked above the sprite)
+    sp_top = sy + ss - spr.get_height()
     inv_label = font_small.render("无敌", True, (200, 255, 100))
-    screen.blit(inv_label, (sx + ss // 2 - inv_label.get_width() // 2, sy - 28))
+    screen.blit(inv_label, (sx + ss // 2 - inv_label.get_width() // 2, sp_top - 22))
     label = font_small.render("超级猎手" if detected else "???", True,
                               (100, 255, 150) if detected else GRAY)
-    screen.blit(label, (sx + ss // 2 - label.get_width() // 2, sy - 44))
+    screen.blit(label, (sx + ss // 2 - label.get_width() // 2, sp_top - 40))
 
     # Tracking line when target acquired (bright green)
     if detected:
@@ -1964,7 +2066,7 @@ def show_main_menu():
     screen.blit(title_surf, (title_x, cy))
     cy += title_surf.get_height() + 4
 
-    sub_surf = font_small.render("直升机撤离射击", True, (160, 180, 220))
+    sub_surf = font_small.render("直升机撤离射击  ·  v%s" % GAME_VERSION, True, (160, 180, 220))
     screen.blit(sub_surf, (WIDTH // 2 - sub_surf.get_width() // 2, cy))
     cy += sub_surf.get_height() + 30
 
@@ -3164,11 +3266,13 @@ try:
             # Update facing angle + footstep sound
             if move_dx != 0 or move_dy != 0:
                 face_angle = math.degrees(math.atan2(move_dy, move_dx))
+                player_moving_phase += 1
                 footstep_timer += 1
                 if footstep_timer >= 18:  # Approx 0.3s interval
                     play_sfx('footstep')
                     footstep_timer = 0
             else:
+                player_moving_phase = 0
                 footstep_timer = 0
 
             # World bounds
