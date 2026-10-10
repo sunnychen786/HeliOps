@@ -21,7 +21,7 @@ import shutil
 # ==============================
 pygame.init()
 
-GAME_VERSION = "1.2"
+GAME_VERSION = "1.2.1"
 
 WIDTH, HEIGHT = 1200,800
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -447,6 +447,37 @@ ammo_empty_timer    = 0     # Ammo depleted hint timer
 current_gun         = "pistol"   # Currently equipped gun
 owned_guns          = {"pistol"}  # Set of owned guns
 
+# Muzzle flashes: [wx, wy, life, max_life, angle]
+muzzle_flashes      = []
+MUZZLE_FLASH_LIFE   = 5
+
+
+def add_muzzle_flash(wx, wy, angle, life=MUZZLE_FLASH_LIFE):
+    muzzle_flashes.append([wx, wy, life, life, angle])
+
+
+def draw_muzzle_flashes():
+    """Bright muzzle blast drawn at the gun tip (world coords)."""
+    for f in muzzle_flashes[:]:
+        f[2] -= 1
+        if f[2] <= 0:
+            muzzle_flashes.remove(f)
+            continue
+        wx, wy, life, life0, ang = f
+        k = life / float(life0)                 # 1 -> 0
+        sx, sy = w2s(wx, wy)
+        r = int(3 + 7 * k)
+        pygame.draw.circle(screen, (255, 240, 170), (int(sx), int(sy)), r)
+        pygame.draw.circle(screen, (255, 170, 40), (int(sx), int(sy)), max(1, r - 2))
+        # Star spikes along the shot direction
+        ln = int(8 + 16 * k)
+        for spread in (0.0, 0.9, -0.9):
+            a2 = ang + spread
+            ex = sx + math.cos(a2) * ln
+            ey = sy + math.sin(a2) * ln
+            pygame.draw.line(screen, (255, 220, 120), (int(sx), int(sy)),
+                             (int(ex), int(ey)), 2)
+
 # Enemy bullets
 enemy_bullets       = []    # [wx, wy, dx, dy]
 enemy_bullet_speed  = 3.5
@@ -697,8 +728,11 @@ SPR_PAL = {
     "o": (104, 116, 68), "O": (70, 80, 48),                         # camo olive
     "b": (114, 86, 52), "B": (78, 58, 38),                          # camo brown
     "v": (40, 42, 50), "t": (28, 28, 34), "y": (120, 126, 138),     # vest/boot/gun
+    "w": (58, 62, 74),                                              # gun barrel (dark)
+    "g": (46, 48, 56),                                              # gloved hand on the weapon
     "D": (72, 58, 92), "d": (46, 36, 62), "A": (56, 46, 74),        # boss armour
     "I": (32, 24, 42), "J": (255, 92, 40), "G": (255, 200, 60),     # boss visor / eye / gold
+    "*": None,                                                      # muzzle marker (invisible)
 }
 
 # ---- Player, front (18 x 32) ----
@@ -913,6 +947,232 @@ SPR_TINT = {
     "boss": {},
 }
 
+# ---- Weapons (v1.2.1) ------------------------------------------------
+# Units now visibly HOLD a weapon; bullets spawn at the muzzle, not at the
+# body centre. Grids are drawn pointing RIGHT; for the front/back poses the
+# same grid is transposed by code so the gun points DOWN (front) / UP (back).
+#   y = gun body, w = barrel, v = gloved hand, # = outline, * = muzzle point
+SPR_W = 28  # unified grid width (room for the gun to stick out to the right)
+_UNSET = object()   # sentinel: "gun not specified -> use the unit default"
+
+SPR_GUNS = {
+    "pistol": [
+        "..####..",
+        ".#wwww*.",
+        ".#ywww..",
+        "..#gg#..",
+        "...##...",
+    ],
+    "rifle": [
+        "..########.",
+        ".#wwwwwwww*",
+        ".#yywwwww#.",
+        "..#gg#yy#..",
+        "...#####...",
+    ],
+    "shotgun": [
+        "..######...",
+        ".#wwwwwwww*",
+        ".#yyywwww#.",
+        "..#gg#yy#..",
+        "...#####...",
+    ],
+    "sniper": [
+        ".....####...",
+        "..#########*",
+        ".##yywwwww#.",
+        "#.#gg#yyyy#.",
+        "..##.#####..",
+    ],
+    "cannon": [                      # boss arm cannon
+        "...######..",
+        "..#wwwwww*.",
+        "..#yywwww#.",
+        "...#####...",
+    ],
+}
+
+# Same weapons seen from ABOVE, muzzle pointing DOWN (used by the front
+# pose, where the unit faces the bottom of the screen -- so the barrel
+# always points the same way the unit is aiming).
+SPR_GUNS_DOWN = {
+    "pistol": [
+        ".####.",
+        "#yyyy#",
+        "#yyyy#",
+        "#yyyy#",
+        ".#ww#.",
+        ".#ww#.",
+        ".#ww#.",
+        "...*..",
+    ],
+    "rifle": [
+        ".####.",
+        "#yyyy#",
+        "#yyyy#",
+        "#yyyy#",
+        "#yyyy#",
+        "#ywwy#",
+        ".#ww#.",
+        ".#ww#.",
+        ".#ww#.",
+        ".#ww#.",
+        ".#ww#.",
+        ".#ww#.",
+        "...*..",
+    ],
+    "shotgun": [
+        ".#####.",
+        "#yyyyy#",
+        "#yyyyy#",
+        "#yyyyy#",
+        "#yyyyy#",
+        "#wwwww#",
+        "#wwwww#",
+        "#wwwww#",
+        "#wwwww#",
+        "...*...",
+    ],
+    "sniper": [
+        ".####.",
+        "#yyyy#",
+        "#yyyy#",
+        "#yyyy#",
+        "#yyyy#",
+        "#yyyy#",
+        "#ywwy#",
+        ".#ww#.",
+        ".#ww#.",
+        ".#ww#.",
+        ".#ww#.",
+        ".#ww#.",
+        ".#ww#.",
+        ".#ww#.",
+        "...*..",
+    ],
+    "cannon": [
+        ".######.",
+        "#yyyyyy#",
+        "#yyyyyy#",
+        "#yyyyyy#",
+        "#yyyyyy#",
+        "#wwwwww#",
+        "#wwwwww#",
+        "#wwwwww#",
+        "#wwwwww#",
+        "...**...",
+    ],
+}
+
+# Where the weapon grid is pasted onto the body grid (logical px).
+SPR_GUN_ANCHOR      = {"front": (18, 15), "back": (9, 14), "side": (15, 17)}
+SPR_GUN_ANCHOR_BOSS = (19, 18)
+
+# Default weapon per unit. Player's is dynamic (current_gun).
+SPR_UNIT_GUN = {"enemy": "rifle", "chaser": None, "super": None, "boss": "cannon"}
+
+_muzzle_cache = {}
+
+
+def _pose_pad(unit, pose):
+    """Left padding applied to a body grid so every pose shares a width."""
+    if unit == "boss":
+        return 0
+    return {"front": 5, "back": 5, "side": 2}.get(pose, 4)
+
+
+def _pad_rows(rows, pad_left):
+    w = max(SPR_W, max(len(r) for r in rows) + pad_left)
+    return ["." * pad_left + r + "." * (w - pad_left - len(r)) for r in rows]
+
+
+def _transpose(rows):
+    w = max(len(r) for r in rows)
+    return ["".join(r[x] if x < len(r) else "." for r in rows) for x in range(w)]
+
+
+def _find_muzzle(rows):
+    for y, r in enumerate(rows):
+        x = r.find("*")
+        if x >= 0:
+            return x, y
+    return len(rows[0]) - 1, len(rows) // 2
+
+
+def _gun_oriented(gun, pose):
+    """Weapon grid + its muzzle cell, oriented for the given pose."""
+    if gun not in SPR_GUNS:
+        return None, None
+    if pose == "side":
+        g = SPR_GUNS[gun]                      # barrel points right
+    else:
+        down = SPR_GUNS_DOWN[gun]
+        # front: barrel points down (the unit faces the bottom of the screen)
+        # back : seen from behind, the barrel pokes out above the shoulder
+        g = down if pose == "front" else down[::-1]
+    return g, _find_muzzle(g)
+
+
+def _overlay_gun(rows, gun_rows, ax, ay):
+    """Stamp the weapon onto the body grid; '*' stays transparent."""
+    out = [list(r) for r in rows]
+    for gy, gr in enumerate(gun_rows):
+        for gx, ch in enumerate(gr):
+            if ch in (".", "*"):
+                continue
+            y, x = ay + gy, ax + gx
+            if 0 <= y < len(out) and 0 <= x < len(out[y]):
+                out[y][x] = ch
+    return ["".join(r) for r in out]
+
+
+def get_muzzle_cell(unit, pose, gun):
+    """Muzzle position in LOGICAL sprite pixels (col, row) for a unit."""
+    key = (unit, pose, gun)
+    cell = _muzzle_cache.get(key)
+    if cell is not None:
+        return cell
+    g, mcell = _gun_oriented(gun, pose)
+    if g is None:
+        cell = None
+    else:
+        if unit == "boss":
+            ax, ay = SPR_GUN_ANCHOR_BOSS
+        else:
+            ax, ay = SPR_GUN_ANCHOR.get(pose, (15, 17))
+        cell = (ax + mcell[0], ay + mcell[1])
+    _muzzle_cache[key] = cell
+    return cell
+
+
+def unit_muzzle_screen(unit, pose, frame, gun, flip, sx, sy, box_w, box_h):
+    """Screen-space position of a unit's muzzle (None if it has no gun)."""
+    cell = get_muzzle_cell(unit, pose, gun)
+    if cell is None:
+        return None
+    spr = get_sprite(unit, pose, frame, None, flip, gun)
+    px = int(sx + box_w // 2 - spr.get_width() // 2)
+    py = int(sy + box_h - spr.get_height())
+    mx, my = cell
+    if flip:
+        mx_px = spr.get_width() - (mx + 1) * SPR_SCALE
+    else:
+        mx_px = mx * SPR_SCALE
+    return (px + mx_px + SPR_SCALE // 2,
+            py + my * SPR_SCALE + SPR_SCALE // 2)
+
+
+def unit_muzzle_world(unit, wx, wy, box, pose, flip, gun=_UNSET, frame=0):
+    """World-space muzzle position; falls back to the body centre."""
+    if gun is _UNSET:
+        gun = SPR_UNIT_GUN.get(unit)
+    sx, sy = w2s(wx, wy)
+    ms = unit_muzzle_screen(unit, pose, frame, gun, flip, sx, sy, box, box)
+    if ms is None:
+        return wx + box / 2.0, wy + box / 2.0
+    return ms[0] + cam_x, ms[1] + cam_y
+
+
 # Enemy state -> vest accent colour (kept from the old colour language)
 SPR_ENEMY_STATE_COLOR = {
     "patrol": (52, 46, 50),
@@ -950,14 +1210,24 @@ def _spr_make(rows, pal, scale):
     return surf
 
 
-def get_sprite(unit, pose, frame=0, extra_tint=None, flip=False):
-    """Build (and cache) a unit sprite surface."""
-    key = (unit, pose, frame, flip, tuple(sorted((extra_tint or {}).items())))
+def get_sprite(unit, pose, frame=0, extra_tint=None, flip=False, gun=_UNSET):
+    """Build (and cache) a unit sprite surface (weapon included)."""
+    if gun is _UNSET:
+        gun = SPR_UNIT_GUN.get(unit)
+    key = (unit, pose, frame, flip, gun,
+           tuple(sorted((extra_tint or {}).items())))
     surf = _spr_cache.get(key)
     if surf is not None:
         return surf
     body, legs = SPR_UNITS[unit][pose]
-    rows = list(body) + list(legs[frame % len(legs)])
+    pad = _pose_pad(unit, pose)
+    rows = _pad_rows(list(body), pad) + _pad_rows(list(legs[frame % len(legs)]), pad)
+    if gun:
+        g, _m = _gun_oriented(gun, pose)
+        if g is not None:
+            ax, ay = (SPR_GUN_ANCHOR_BOSS if unit == "boss"
+                      else SPR_GUN_ANCHOR.get(pose, (15, 17)))
+            rows = _overlay_gun(rows, g, ax, ay)
     pal = dict(SPR_PAL)
     pal.update(SPR_TINT.get(unit, {}))
     if extra_tint:
@@ -985,9 +1255,9 @@ def _walk_frame(phase):
 
 
 def blit_unit(unit, pose, sx, sy, box_w, box_h, frame=0,
-              extra_tint=None, flip=False, foot_align=True):
+              extra_tint=None, flip=False, foot_align=True, gun=_UNSET):
     """Blit a unit sprite centred on the entity box (sx, sy, box_w, box_h)."""
-    spr = get_sprite(unit, pose, frame, extra_tint, flip)
+    spr = get_sprite(unit, pose, frame, extra_tint, flip, gun)
     px = int(sx + box_w // 2 - spr.get_width() // 2)
     if foot_align:
         py = int(sy + box_h - spr.get_height())      # feet on the box bottom
@@ -1006,7 +1276,8 @@ def draw_player(wx, wy):
     pose, flip = _pose_and_flip(face_angle)
     moving = (player_moving_phase > 0)
     frame = _walk_frame(player_moving_phase / 7.0) if moving else 0
-    blit_unit("player", pose, sx, sy, player_size, player_size, frame, flip=flip)
+    blit_unit("player", pose, sx, sy, player_size, player_size, frame, flip=flip,
+              gun=globals().get("current_gun", "pistol"))
 
 
 def draw_enemy(ewx, ewy, state):
@@ -2351,6 +2622,7 @@ def reset_game(reset_score=True):
     global in_death_screen, killer, awaiting_departure
     global mission_boss_kills
     global current_gun, owned_guns
+    global face_angle, player_moving_phase
     global extreme_plays_remaining, extreme_mode_active, search_message, search_message_timer
 
     awaiting_departure = False
@@ -3332,8 +3604,21 @@ try:
                     ddy = target_cy - pcy
                     dist_t = math.hypot(ddx, ddy)
                     if dist_t > 0:
-                        base_dx = ddx / dist_t * gun["speed"]
-                        base_dy = ddy / dist_t * gun["speed"]
+                        # v1.2.1: turn toward the target and fire from the
+                        # weapon's muzzle instead of the body centre.
+                        aim = math.degrees(math.atan2(ddy, ddx))
+                        face_angle = aim
+                        p_pose, p_flip = _pose_and_flip(aim)
+                        p_frame = (_walk_frame(player_moving_phase / 7.0)
+                                   if player_moving_phase > 0 else 0)
+                        mx, my = unit_muzzle_world(
+                            "player", player_x, player_y, player_size,
+                            p_pose, p_flip, current_gun, p_frame)
+                        mdx = target_cx - mx
+                        mdy = target_cy - my
+                        mdt = math.hypot(mdx, mdy) or dist_t
+                        base_dx = mdx / mdt * gun["speed"]
+                        base_dy = mdy / mdt * gun["speed"]
                         n = gun["bullets"]
                         for bi in range(n):
                             if n == 1:
@@ -3344,7 +3629,8 @@ try:
                                 sin_a = math.sin(spread_angle)
                                 bdx = base_dx * cos_a - base_dy * sin_a
                                 bdy = base_dx * sin_a + base_dy * cos_a
-                            bullets.append([pcx - 3, pcy - 3, bdx, bdy, gun["damage"]])
+                            bullets.append([mx - 3, my - 3, bdx, bdy, gun["damage"]])
+                        add_muzzle_flash(mx, my, math.atan2(mdy, mdx))
                         bullet_count -= 1
                         bullet_cooldown = effective_cooldown
             elif keys[pygame.K_SPACE] and bullet_count == 0 and bullet_cooldown == 0:
@@ -3515,8 +3801,12 @@ try:
                         base_angle = math.atan2(dy, dx)
                         spread = random.uniform(-0.8, 0.8)  # +/-45deg random deviation
                         angle = base_angle + spread
-                        ebx = ex_c + math.cos(base_angle) * (enemy_size // 2)
-                        eby = ey_c + math.sin(base_angle) * (enemy_size // 2)
+                        # v1.2.1: spawn at the rifle muzzle, not the centre
+                        e_ang = math.degrees(math.atan2(pcy - ey_c, pcx - ex_c))
+                        e_pose, e_flip = _pose_and_flip(e_ang)
+                        ebx, eby = unit_muzzle_world(
+                            "enemy", e[0], e[1], enemy_size, e_pose, e_flip)
+                        add_muzzle_flash(ebx, eby, angle, 4)
                         enemy_bullets.append([ebx, eby,
                                               math.cos(angle) * enemy_bullet_speed,
                                               math.sin(angle) * enemy_bullet_speed])
@@ -3557,8 +3847,10 @@ try:
                         base_angle = math.atan2(dy, dx)
                         spread = random.uniform(-BOSS_SPREAD, BOSS_SPREAD)
                         angle = base_angle + spread
-                        ebx = bcx2 + math.cos(base_angle) * (BOSS_SIZE // 2)
-                        eby = bcy2 + math.sin(base_angle) * (BOSS_SIZE // 2)
+                        # v1.2.1: spawn at the boss arm cannon's muzzle
+                        ebx, eby = unit_muzzle_world(
+                            "boss", boss[0], boss[1], BOSS_SIZE, "front", False)
+                        add_muzzle_flash(ebx, eby, angle, 5)
                         enemy_bullets.append([ebx, eby,
                                               math.cos(angle) * enemy_bullet_speed,
                                               math.sin(angle) * enemy_bullet_speed,
@@ -4256,6 +4548,9 @@ try:
 
         # Player (always at screen center)
         draw_player(player_x, player_y)
+
+        # Muzzle flashes (on top of units, under the HUD)
+        draw_muzzle_flashes()
 
         # HUD
         draw_hud()
