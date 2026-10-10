@@ -21,7 +21,7 @@ import shutil
 # ==============================
 pygame.init()
 
-GAME_VERSION = "1.2.1"
+GAME_VERSION = "1.2.2"
 
 WIDTH, HEIGHT = 1200,800
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -58,10 +58,16 @@ SUPER_CHASER_COLOR = (30, 220, 80)   # Super Chaser exclusive green (invincible)
 # Gun system
 # ==============================
 GUN_TYPES = {
-    "pistol":  {"name": "手枪",   "icon": "", "cooldown": 12, "speed": 9,  "damage": 1, "bullets": 1, "spread": 0,    "cost": 0,    "color": (160, 160, 160)},
-    "rifle":   {"name": "步枪",   "icon": "", "cooldown": 8,  "speed": 14, "damage": 1, "bullets": 1, "spread": 0,    "cost": 800,  "color": (100, 150, 220)},
-    "shotgun": {"name": "霰弹枪", "icon": "", "cooldown": 30, "speed": 7,  "damage": 1, "bullets": 5, "spread": 0.25, "cost": 1500, "color": (220, 160, 60)},
-    "sniper":  {"name": "狙击枪", "icon": "", "cooldown": 50, "speed": 22, "damage": 4, "bullets": 1, "spread": 0,    "cost": 2500, "color": (60, 200, 80)},
+    # mag    = rounds per magazine
+    # reload = reload time in frames (60 fps): 45 = 0.75s, 130 = 2.2s
+    "pistol":  {"name": "手枪",   "icon": "", "cooldown": 12, "speed": 9,  "damage": 1, "bullets": 1, "spread": 0,    "cost": 0,    "color": (160, 160, 160),
+                "mag": 12, "reload": 45},
+    "rifle":   {"name": "步枪",   "icon": "", "cooldown": 8,  "speed": 14, "damage": 1, "bullets": 1, "spread": 0,    "cost": 800,  "color": (100, 150, 220),
+                "mag": 30, "reload": 80},
+    "shotgun": {"name": "霰弹枪", "icon": "", "cooldown": 30, "speed": 7,  "damage": 1, "bullets": 5, "spread": 0.25, "cost": 1500, "color": (220, 160, 60),
+                "mag": 6,  "reload": 110},
+    "sniper":  {"name": "狙击枪", "icon": "", "cooldown": 50, "speed": 22, "damage": 4, "bullets": 1, "spread": 0,    "cost": 2500, "color": (60, 200, 80),
+                "mag": 5,  "reload": 130},
 }
 GUN_SHOP_PRICES = {k: v["cost"] for k, v in GUN_TYPES.items() if v["cost"] > 0}
 
@@ -259,6 +265,33 @@ def _make_ammo_empty():
         samples.append(s)
     return _gen_wav_bytes(samples)
 
+def _make_reload():
+    """Reload start: the empty magazine drops out (low clunk)."""
+    dur = 0.09
+    n = int(22050 * dur)
+    samples = []
+    for i in range(n):
+        t = i / 22050
+        env = max(0.0, 1 - t / dur)
+        s = math.sin(2 * math.pi * 320 * t) * env * 0.25
+        s += (_rnd.random() * 2 - 1) * env * 0.20
+        samples.append(s)
+    return _gen_wav_bytes(samples)
+
+def _make_reload_done():
+    """Reload finished: the bolt clicks shut (bright metallic tick)."""
+    dur = 0.08
+    n = int(22050 * dur)
+    samples = []
+    for i in range(n):
+        t = i / 22050
+        env = max(0.0, 1 - t / dur)
+        s = math.sin(2 * math.pi * 1500 * t) * env * 0.18
+        s += math.sin(2 * math.pi * 2400 * t) * env * 0.08
+        s += (_rnd.random() * 2 - 1) * env * 0.12
+        samples.append(s)
+    return _gen_wav_bytes(samples)
+
 def _make_bgm_loop():
     """Simple looping BGM: low sustained ambient tone"""
     dur = 4.0   # 4-second loop
@@ -307,6 +340,7 @@ def init_sounds():
         'extract': _make_extract, 'hurt': _make_hurt, 'death': _make_death,
         'boss_die': _make_boss_die, 'click': _make_click, 'ammo_empty': _make_ammo_empty,
         'footstep': _make_footstep,
+        'reload': _make_reload, 'reload_done': _make_reload_done,
     }
     for name, gen in generators.items():
         try:
@@ -441,11 +475,79 @@ bullet_speed      = 9
 bullet_cooldown   = 0
 bullet_cooldown_max = 12
 ammo_bonus        = 0
-bullet_count        = 600   # Bullet count
-max_bullets         = 600   # Max bullets
+bullet_count        = 600   # Reserve ammo (spare rounds, NOT in any magazine)
+max_bullets         = 600   # Max reserve ammo
 ammo_empty_timer    = 0     # Ammo depleted hint timer
 current_gun         = "pistol"   # Currently equipped gun
 owned_guns          = {"pistol"}  # Set of owned guns
+
+# --- Magazine / reload system (v1.2.2) -------------------------
+# Each gun keeps its own magazine; `bullet_count` is the shared reserve.
+gun_mags     = {g: v["mag"] for g, v in GUN_TYPES.items()}
+reload_timer = 0      # >0 -> weapon is down, shooting is blocked
+reload_total = 0      # length of the running reload, for the progress bar
+reload_gun   = None   # which gun is being reloaded (switching guns cancels it)
+
+
+def mag_size(gun_name):
+    """Rounds a full magazine holds for this gun."""
+    return GUN_TYPES[gun_name]["mag"]
+
+
+def mag_left(gun_name):
+    """Rounds currently loaded in the given gun's magazine."""
+    return gun_mags.get(gun_name, 0)
+
+
+def start_reload(gun_name=None):
+    """Begin a reload. No-op while reloading, with no reserve, or already full."""
+    global reload_timer, reload_total, reload_gun
+    g = gun_name or current_gun
+    if reload_timer > 0 or bullet_count <= 0 or mag_left(g) >= mag_size(g):
+        return False
+    reload_total = GUN_TYPES[g]["reload"]
+    reload_timer = reload_total
+    reload_gun = g
+    return True
+
+
+def finish_reload():
+    """Timer hit 0: move rounds from the reserve into the magazine."""
+    global bullet_count
+    g = reload_gun or current_gun
+    take = min(mag_size(g) - mag_left(g), bullet_count)
+    if take > 0:
+        gun_mags[g] = mag_left(g) + take
+        bullet_count -= take
+
+
+def cancel_reload():
+    """Switching guns (or leaving the level) abandons the reload in progress."""
+    global reload_timer, reload_total, reload_gun
+    reload_timer = 0
+    reload_total = 0
+    reload_gun = None
+
+
+def tick_reload():
+    """Advance the reload by one frame. Returns True the frame it completes."""
+    global reload_timer, reload_total, reload_gun
+    if reload_timer <= 0:
+        return False
+    reload_timer -= 1
+    if reload_timer > 0:
+        return False
+    finish_reload()
+    reload_total = 0
+    reload_gun = None
+    return True
+
+
+def reset_magazines():
+    """Refill every owned magazine and clear any reload (new run / load)."""
+    for g in GUN_TYPES:
+        gun_mags[g] = GUN_TYPES[g]["mag"]
+    cancel_reload()
 
 # Muzzle flashes: [wx, wy, life, max_life, angle]
 muzzle_flashes      = []
@@ -1877,12 +1979,31 @@ def draw_clock_icon(surface, cx, cy, size, color=WHITE):
     pygame.draw.circle(surface, color, (int(cx), int(cy)), int(s * 0.25))
 
 
+def draw_reload_gauge():
+    """Floating reload bar above the player (the player is always centred)."""
+    if reload_timer <= 0 or reload_total <= 0:
+        return
+    done = 1.0 - reload_timer / float(reload_total)
+    bar_w, bar_h = 66, 7
+    cx = WIDTH // 2
+    cy = HEIGHT // 2 - player_size // 2 - 36
+    pygame.draw.rect(screen, (0, 0, 0),
+                     (cx - bar_w // 2 - 2, cy - 2, bar_w + 4, bar_h + 4), border_radius=3)
+    pygame.draw.rect(screen, (38, 44, 58),
+                     (cx - bar_w // 2, cy, bar_w, bar_h), border_radius=3)
+    pygame.draw.rect(screen, (110, 200, 255),
+                     (cx - bar_w // 2, cy, int(bar_w * done), bar_h), border_radius=3)
+    label = font_small.render("换弹中", True, (150, 210, 255))
+    screen.blit(label, (cx - label.get_width() // 2, cy - label.get_height() - 1))
+
+
 def draw_hud():
-    bar_bg = pygame.Surface((WIDTH, 56), pygame.SRCALPHA)
+    # 76px: font_normal(32) renders ~44px tall, so the score row needs the room
+    bar_bg = pygame.Surface((WIDTH, 76), pygame.SRCALPHA)
     bar_bg.fill((0, 0, 0, 130))
     screen.blit(bar_bg, (0, 0))
 
-    screen.blit(font_normal.render(f"分数: {score}", True, WHITE), (12, 6))
+    screen.blit(font_normal.render(f"分数: {score}", True, WHITE), (12, 2))
 
     # HP: draw one heart icon + count (e.g., ♥ x 5)
     hx = 250
@@ -1904,18 +2025,19 @@ def draw_hud():
     screen.blit(font_normal.render(f"倍率: x{extract_multiplier:.1f}", True, EXTRACT_COLOR),
                 (WIDTH - 550, 6))
 
-    # Backpack on second row to avoid overlap with multiplier
+    # Backpack on second row, clear of the 44px-tall score render above it
     bp_x = 10
-    bp_y = 30
+    bp_y = 48
+    # "（空）" and the "0/8" counter used to be blitted on top of each other
     screen.blit(font_small.render("背包:", True, WHITE), (bp_x, bp_y + 2))
     if len(backpack) == 0:
-        screen.blit(font_small.render("（空）", True, GRAY), (bp_x + 55, bp_y + 2))
+        screen.blit(font_small.render("（空）", True, GRAY), (bp_x + 62, bp_y + 2))
     else:
+        screen.blit(font_small.render(f"{len(backpack)}/{backpack_max}", True, GRAY),
+                    (bp_x + 62, bp_y + 2))
         for i, item in enumerate(backpack):
             pygame.draw.circle(screen, SUPPLY_TYPES[item]["color"],
-                               (bp_x + 68 + i * 20, bp_y + 8), 7)
-    screen.blit(font_small.render(f"{len(backpack)}/{backpack_max}", True, GRAY),
-                (bp_x + 55, bp_y + 8))
+                               (bp_x + 126 + i * 20, bp_y + 11), 7)
 
     # Estimated value (right of backpack row)
     ev_text = font_small.render(f"预估: {estimated_value}", True, EXTRACT_COLOR)
@@ -2018,10 +2140,25 @@ def draw_hud():
                      (WIDTH - danger_w - 12, HEIGHT - 20, int(danger_w * danger_level), 6))
     screen.blit(font_small.render("警戒", True, GRAY), (WIDTH - danger_w - 50, HEIGHT - 22))
 
-    # Bullet count (right of timer bar) - red warning when <=30
-    ammo_color = (255, 60, 60) if bullet_count <= 30 else (255, 240, 100)
-    ammo_text = font_small.render(f"弹药: {bullet_count}", True, ammo_color)
-    screen.blit(ammo_text, (time_bar_x + time_bar_w + 12, time_bar_y - 4))
+    # Ammo readout: rounds loaded / magazine size, plus the reserve pool.
+    # While reloading it turns into a "换弹中 xx%" indicator.
+    mag_now, mag_max = mag_left(current_gun), mag_size(current_gun)
+    if reload_timer > 0:
+        done = 1.0 - reload_timer / float(reload_total or 1)
+        ammo_color = (140, 210, 255)
+        ammo_text = font_small.render("换弹中 %d%%" % int(done * 100), True, ammo_color)
+    elif mag_now == 0:
+        ammo_color = (255, 60, 60)
+        ammo_text = font_small.render(
+            "弹匣 空 · 备弹 %d" % bullet_count, True, ammo_color)
+    else:
+        ammo_color = (255, 240, 100) if mag_now > mag_max * 0.3 else (255, 140, 60)
+        ammo_text = font_small.render(
+            "弹药 %d/%d · 备弹 %d" % (mag_now, mag_max, bullet_count), True, ammo_color)
+    # right-aligned just above the mission timer: the bottom-right corner is
+    # already taken by the danger bar / "警戒" label
+    screen.blit(ammo_text, (time_bar_x + time_bar_w - ammo_text.get_width(),
+                            time_bar_y - 26))
 
     # Weapon bar (show all owned guns, highlight current) - never hide on ammo empty
     gun_list = ["pistol", "rifle", "shotgun", "sniper"]
@@ -2250,6 +2387,7 @@ def show_settings():
         ("WASD / 方向键", "移动直升机"),
         ("J", "搜索物资"),
         ("空格", "射击"),
+        ("R", "换弹（弹匣打空会自动换弹）"),
         ("1-4 / Tab / 滚轮", "切换武器"),
         ("ESC", "暂停游戏"),
         ("5", "存档"),
@@ -2292,6 +2430,7 @@ def show_tutorial():
         ("移动：", "WASD 或方向键"),
         ("搜索：", "飞到物资旁按 J（停留1.5秒）"),
         ("射击：", "空格键（自动瞄准最近敌人）"),
+        ("换弹：", "按 R；弹匣打空会自动换弹，换弹时无法射击"),
         ("切换武器：", "数字键1-4 / Tab / 鼠标滚轮"),
         ("撤离：", "飞到黄色区域停留3秒"),
         ("", ""),
@@ -2647,6 +2786,7 @@ def reset_game(reset_score=True):
     bullet_cooldown     = 0
     ammo_bonus          = 0
     bullet_count        = max_bullets
+    reset_magazines()
     search_message = f"! Reset - Ammo: {bullet_count}"
     search_message_timer = 180
     ammo_empty_timer    = 0
@@ -2987,7 +3127,7 @@ def save_game():
         "enemy_spawn_timer": enemy_spawn_timer,
         "bullet_cooldown": bullet_cooldown,
         "ammo_bonus": ammo_bonus, "bullet_count": bullet_count, "max_bullets": max_bullets,
-        "ammo_empty_timer": ammo_empty_timer,
+        "ammo_empty_timer": ammo_empty_timer, "gun_mags": dict(gun_mags),
         "mission_timer": mission_timer,
         "walls": walls,
         "boss": boss, "boss_respawn_timer": boss_respawn_timer,
@@ -3149,6 +3289,12 @@ def load_game():
         bullet_count = state["bullet_count"]
         max_bullets = state.get("max_bullets", 600)
         ammo_empty_timer = state.get("ammo_empty_timer", 0)
+        saved_mags = state.get("gun_mags")   # saves from before v1.2.2 have none
+        if isinstance(saved_mags, dict):
+            for gname, rounds in saved_mags.items():
+                if gname in gun_mags:
+                    gun_mags[gname] = rounds
+        cancel_reload()
         mission_timer = state["mission_timer"]
         walls = state["walls"]
         boss = state["boss"]
@@ -3237,6 +3383,7 @@ try:
                         cur_idx = (cur_idx + 1) % len(owned_gun_list)
                     else:               # Up/previous
                         cur_idx = (cur_idx - 1) % len(owned_gun_list)
+                    cancel_reload()          # swapping guns abandons the reload
                     current_gun = owned_gun_list[cur_idx]
                     search_message = f"切换: {GUN_TYPES[current_gun]['name']}"
                     search_message_timer = 60
@@ -3378,13 +3525,13 @@ try:
                             search_message_timer = 120
                     elif event.key == pygame.K_4:
                         if score >= 800 and "rifle" not in owned_guns:
-                            score -= 800; owned_guns.add("rifle"); auto_save()
+                            score -= 800; owned_guns.add("rifle");   gun_mags["rifle"]   = mag_size("rifle"); auto_save()
                     elif event.key == pygame.K_5:
                         if score >= 1500 and "shotgun" not in owned_guns:
-                            score -= 1500; owned_guns.add("shotgun"); auto_save()
+                            score -= 1500; owned_guns.add("shotgun"); gun_mags["shotgun"] = mag_size("shotgun"); auto_save()
                     elif event.key == pygame.K_6:
                         if score >= 2500 and "sniper" not in owned_guns:
-                            score -= 2500; owned_guns.add("sniper"); auto_save()
+                            score -= 2500; owned_guns.add("sniper");  gun_mags["sniper"]  = mag_size("sniper"); auto_save()
                     elif event.key == pygame.K_RETURN:
                         restart_mission()
                 elif in_transfer:
@@ -3407,13 +3554,13 @@ try:
                             search_message_timer = 120
                     elif event.key == pygame.K_4:
                         if score >= 800 and "rifle" not in owned_guns:
-                            score -= 800; owned_guns.add("rifle"); auto_save()
+                            score -= 800; owned_guns.add("rifle");   gun_mags["rifle"]   = mag_size("rifle"); auto_save()
                     elif event.key == pygame.K_5:
                         if score >= 1500 and "shotgun" not in owned_guns:
-                            score -= 1500; owned_guns.add("shotgun"); auto_save()
+                            score -= 1500; owned_guns.add("shotgun"); gun_mags["shotgun"] = mag_size("shotgun"); auto_save()
                     elif event.key == pygame.K_6:
                         if score >= 2500 and "sniper" not in owned_guns:
-                            score -= 2500; owned_guns.add("sniper"); auto_save()
+                            score -= 2500; owned_guns.add("sniper");  gun_mags["sniper"]  = mag_size("sniper"); auto_save()
                     elif event.key == pygame.K_RETURN:
                         extract_zone = [float(random.randint(40, WORLD_W - extract_size - 40)),
                                         float(random.randint(80, WORLD_H - extract_size - 40))]
@@ -3559,10 +3706,22 @@ try:
             cam_x = max(0.0, min(float(WORLD_W - WIDTH),  cam_x))
             cam_y = max(0.0, min(float(WORLD_H - HEIGHT), cam_y))
 
+            # ---- Reloading (R, or automatic when the magazine runs dry) ----
+            if keys[pygame.K_r] and reload_timer == 0:
+                if mag_left(current_gun) < mag_size(current_gun) and bullet_count > 0:
+                    if start_reload():
+                        play_sfx('reload')
+            if (reload_timer == 0 and mag_left(current_gun) == 0
+                    and bullet_count > 0):
+                if start_reload():                  # empty magazine -> auto reload
+                    play_sfx('reload')
+
             # ---- Shooting (Space, auto-aim + gun differences) ----
             gun = GUN_TYPES[current_gun]
             effective_cooldown = max(2, gun["cooldown"] - ammo_bonus * 2)
-            if keys[pygame.K_SPACE] and bullet_cooldown == 0 and bullet_count > 0:
+            mag_now = mag_left(current_gun)
+            if (keys[pygame.K_SPACE] and bullet_cooldown == 0
+                    and reload_timer == 0 and mag_now > 0):
                 play_sfx('shoot')
                 pcx = player_x + player_size // 2
                 pcy = player_y + player_size // 2
@@ -3631,13 +3790,17 @@ try:
                                 bdy = base_dx * sin_a + base_dy * cos_a
                             bullets.append([mx - 3, my - 3, bdx, bdy, gun["damage"]])
                         add_muzzle_flash(mx, my, math.atan2(mdy, mdx))
-                        bullet_count -= 1
+                        gun_mags[current_gun] = mag_now - 1
                         bullet_cooldown = effective_cooldown
-            elif keys[pygame.K_SPACE] and bullet_count == 0 and bullet_cooldown == 0:
+            elif (keys[pygame.K_SPACE] and bullet_cooldown == 0
+                  and reload_timer == 0 and mag_now == 0 and bullet_count == 0):
                 play_sfx('ammo_empty')
-                # Ammo depleted, trigger hint (can retrigger every 60 frames)
+                # Nothing left anywhere: hint (can retrigger every 60 frames)
                 ammo_empty_timer = 120
                 bullet_cooldown = 20  # Prevent refresh every frame
+
+            if tick_reload():
+                play_sfx('reload_done')
 
             if bullet_cooldown > 0:
                 bullet_cooldown -= 1
@@ -3647,6 +3810,7 @@ try:
                 gun_list = ["pistol", "rifle", "shotgun", "sniper"]
                 for ki, gn in zip(gun_keys, gun_list):
                     if keys[ki] and gn in owned_guns and current_gun != gn:
+                        cancel_reload()          # swapping guns abandons the reload
                         current_gun = gn
                         search_message = f"切换: {GUN_TYPES[gn]['name']}"
                         search_message_timer = 60
@@ -4039,7 +4203,7 @@ try:
                             if gun_drop_roll < 0.4:
                                 drop_gun = random.choice(["rifle", "shotgun", "sniper"])
                                 if drop_gun not in owned_guns:
-                                    owned_guns.add(drop_gun)
+                                    owned_guns.add(drop_gun);  gun_mags[drop_gun]  = mag_size(drop_gun)
                                     search_message = f"Boss掉落: {GUN_TYPES[drop_gun]['name']}！"
                                     search_message_timer = 120
                                     auto_save()  # Persist guns immediately
@@ -4127,7 +4291,7 @@ try:
                             if gun_drop_roll < 0.4:
                                 drop_gun = random.choice(["rifle", "shotgun", "sniper"])
                                 if drop_gun not in owned_guns:
-                                    owned_guns.add(drop_gun)
+                                    owned_guns.add(drop_gun);  gun_mags[drop_gun]  = mag_size(drop_gun)
                                     search_message = f"Boss掉落: {GUN_TYPES[drop_gun]['name']}！"
                                     search_message_timer = 120
                                     auto_save()  # Persist guns immediately
@@ -4551,6 +4715,9 @@ try:
 
         # Muzzle flashes (on top of units, under the HUD)
         draw_muzzle_flashes()
+
+        # Reload gauge (floats over the player, under the HUD)
+        draw_reload_gauge()
 
         # HUD
         draw_hud()
