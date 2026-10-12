@@ -21,7 +21,7 @@ import shutil
 # ==============================
 pygame.init()
 
-GAME_VERSION = "1.2.2"
+GAME_VERSION = "1.2.3"
 
 WIDTH, HEIGHT = 1200,800
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -492,6 +492,15 @@ reload_gun   = None   # which gun is being reloaded (switching guns cancels it)
 def mag_size(gun_name):
     """Rounds a full magazine holds for this gun."""
     return GUN_TYPES[gun_name]["mag"]
+
+
+def add_reserve_ammo(amount):
+    """Top the reserve pool up, never past `max_bullets`. Returns rounds gained."""
+    global bullet_count
+    gained = min(amount, max_bullets - bullet_count)
+    if gained > 0:
+        bullet_count += gained
+    return gained
 
 
 def mag_left(gun_name):
@@ -2107,7 +2116,7 @@ def draw_hud():
         if game_over_reason == "time_up":
             status_text = font_small.render("任务时间耗尽", True, (255, 180, 80))
         else:
-            status_text = font_small.render("! 直升机被击毁", True, (255, 80, 80))
+            status_text = font_small.render("! 已被击倒", True, (255, 80, 80))
     elif extract_hold_timer > 0:
         pct = int(extract_hold_timer / EXTRACT_HOLD_FRAMES * 100)
         status_text = font_small.render(f"● 撤离中... {pct}%  稳住！",
@@ -2280,7 +2289,7 @@ def draw_transfer_station():
     cy = panel_y + 20
 
     # Title
-    title = font_big.render("! 直升机被击毁！", True, (255, 80, 80))
+    title = font_big.render("! 已被击倒！", True, (255, 80, 80))
     screen.blit(title, (WIDTH // 2 - title.get_width() // 2, cy))
     cy += title.get_height() + 5
 
@@ -2384,7 +2393,7 @@ def show_settings():
     screen.blit(section, (WIDTH // 2 - section.get_width() // 2, cy))
     cy += 28
     controls = [
-        ("WASD / 方向键", "移动直升机"),
+        ("WASD / 方向键", "移动角色"),
         ("J", "搜索物资"),
         ("空格", "射击"),
         ("R", "换弹（弹匣打空会自动换弹）"),
@@ -2428,14 +2437,14 @@ def show_tutorial():
         ("目标：", "搜索物资并从战区撤离"),
         ("", ""),
         ("移动：", "WASD 或方向键"),
-        ("搜索：", "飞到物资旁按 J（停留1.5秒）"),
+        ("搜索：", "走到物资旁按 J（停留1.5秒）"),
         ("射击：", "空格键（自动瞄准最近敌人）"),
         ("换弹：", "按 R；弹匣打空会自动换弹，换弹时无法射击"),
         ("切换武器：", "数字键1-4 / Tab / 鼠标滚轮"),
-        ("撤离：", "飞到黄色区域停留3秒"),
+        ("撤离：", "走到黄色撤离点停留3秒，直升机会降落接应"),
         ("", ""),
         ("", "!  敌人会巡逻和追击 — Boss非常致命！"),
-        ("", "坠机时未撤离的物资会丢失"),
+        ("", "阵亡时背包里未撤离的物资会丢失"),
         ("", "撤离后到商店购买装备"),
         ("", ""),
         ("", "按 Enter 出发。祝你好运！"),
@@ -2666,7 +2675,7 @@ def show_death_screen():
     cy = 70
 
     # Title
-    title_surf = font_huge.render("直升机被击毁", True, (255, 60, 60))
+    title_surf = font_huge.render("已被击倒", True, (255, 60, 60))
     screen.blit(title_surf, (WIDTH // 2 - title_surf.get_width() // 2, cy))
     cy += title_surf.get_height() + 16
 
@@ -2700,7 +2709,7 @@ def show_death_screen():
         # Killer description
         killer_desc = {
             "巡逻兵":        "被巡逻守卫击落",
-            "Boss":         "被Boss直升机撞击摧毁",
+            "Boss":         "被Boss近身撞倒",
             "猎手":       "被猎手追上击落",
             "超级猎手": "被超级猎手击落",
             "Boss炮弹":  "被Boss炮火命中",
@@ -2735,7 +2744,7 @@ def show_game_over():
     else:
         title       = "任务失败"
         title_color = (255, 60, 60)
-        subtitle    = "直升机被击毁"
+        subtitle    = "在战场上被击倒"
 
     go_text      = font_huge.render(title, True, title_color)
     sub_text     = font_normal.render(subtitle, True, GRAY)
@@ -3083,14 +3092,15 @@ def do_extraction():
     global extract_zone, extract_hold_timer, in_shop, mission_timer, estimated_value
     global in_main_menu, last_result, mission_boss_kills
     global adv_high_extract
-    if len(backpack) == 0:
-        extraction_message = "背包是空的！"
-        extraction_message_timer = 60
-        extract_hold_timer = 0
-        return False
+    # Carrying loot is NOT required to extract — the helicopter lifts off even
+    # with an empty backpack; you just settle for whatever the run was worth.
+    had_loot = len(backpack) > 0
     bonus = int(estimated_value * extract_multiplier)   # Settle estimated value (with multiplier)
     score += bonus
-    extract_multiplier = min(5.0, extract_multiplier + (0.72 if extreme_mode_active else (0.45 if hard_mode_active else 0.3)))
+    if had_loot:
+        # Only hauling loot out grows the streak multiplier, otherwise a player
+        # could farm it by dipping into the zone empty-handed over and over.
+        extract_multiplier = min(5.0, extract_multiplier + (0.72 if extreme_mode_active else (0.45 if hard_mode_active else 0.3)))
     # Advanced task 3: est>400 extraction success in extreme mode (check before zeroing)
     ev_before = estimated_value
     backpack = []
@@ -3217,6 +3227,7 @@ def auto_load(reset_score=False):
         ammo_bonus        = state.get("ammo_bonus", 0)
         bullet_count      = state.get("bullet_count", max_bullets)
         max_bullets       = state.get("max_bullets", max_bullets)
+        bullet_count      = min(bullet_count, max_bullets)   # clamp old/overflowed saves
         extract_multiplier = state.get("extract_multiplier", 1.0)
         danger_level      = state.get("danger_level", 0.0)
         boss_token_count  = state.get("boss_token_count", 0)
@@ -3288,6 +3299,7 @@ def load_game():
         ammo_bonus = state["ammo_bonus"]
         bullet_count = state["bullet_count"]
         max_bullets = state.get("max_bullets", 600)
+        bullet_count = min(bullet_count, max_bullets)   # clamp old/overflowed saves
         ammo_empty_timer = state.get("ammo_empty_timer", 0)
         saved_mags = state.get("gun_mags")   # saves from before v1.2.2 have none
         if isinstance(saved_mags, dict):
@@ -3517,12 +3529,16 @@ try:
                             armor += 1
                     elif event.key == pygame.K_3:
                         if score >= SHOP_AMMO_COST:
-                            score -= SHOP_AMMO_COST
-                            ammo_bonus = min(5, ammo_bonus + 3)
-                            bullet_count += 50
-                            auto_save()
-                            search_message = f"弹药+50 当前: {bullet_count}"
-                            search_message_timer = 120
+                            gained = add_reserve_ammo(50)
+                            if gained <= 0:          # reserve already full, don't charge
+                                search_message = f"备弹已满 {bullet_count}/{max_bullets}"
+                                search_message_timer = 120
+                            else:
+                                score -= SHOP_AMMO_COST
+                                ammo_bonus = min(5, ammo_bonus + 3)
+                                auto_save()
+                                search_message = f"弹药+{gained} 当前: {bullet_count}"
+                                search_message_timer = 120
                     elif event.key == pygame.K_4:
                         if score >= 800 and "rifle" not in owned_guns:
                             score -= 800; owned_guns.add("rifle");   gun_mags["rifle"]   = mag_size("rifle"); auto_save()
@@ -3546,12 +3562,16 @@ try:
                             armor += 1
                     elif event.key == pygame.K_3:
                         if score >= SHOP_AMMO_COST:
-                            score -= SHOP_AMMO_COST
-                            ammo_bonus = min(5, ammo_bonus + 3)
-                            bullet_count += 50
-                            auto_save()
-                            search_message = f"弹药+50 当前: {bullet_count}"
-                            search_message_timer = 120
+                            gained = add_reserve_ammo(50)
+                            if gained <= 0:          # reserve already full, don't charge
+                                search_message = f"备弹已满 {bullet_count}/{max_bullets}"
+                                search_message_timer = 120
+                            else:
+                                score -= SHOP_AMMO_COST
+                                ammo_bonus = min(5, ammo_bonus + 3)
+                                auto_save()
+                                search_message = f"弹药+{gained} 当前: {bullet_count}"
+                                search_message_timer = 120
                     elif event.key == pygame.K_4:
                         if score >= 800 and "rifle" not in owned_guns:
                             score -= 800; owned_guns.add("rifle");   gun_mags["rifle"]   = mag_size("rifle"); auto_save()
@@ -4516,10 +4536,13 @@ try:
                             supplies.pop(searching_supply)
                             searching_supply = None
                         elif stype == "ammo":
-                            # Red ammo: replenish ammo supply
-                            ammo_bonus = min(5, ammo_bonus + 2)
-                            bullet_count = min(max_bullets, bullet_count + 50)
-                            search_message = f"弹药+50 ●"
+                            # Red ammo: replenish ammo supply (capped at max_bullets)
+                            gained = add_reserve_ammo(50)
+                            if gained > 0:
+                                ammo_bonus = min(5, ammo_bonus + 2)
+                                search_message = f"弹药+{gained} ●"
+                            else:
+                                search_message = f"备弹已满 ●"
                             search_message_timer = 60
                             supplies.pop(searching_supply)
                             searching_supply = None
