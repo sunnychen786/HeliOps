@@ -21,7 +21,7 @@ import shutil
 # ==============================
 pygame.init()
 
-GAME_VERSION = "1.2.3"
+GAME_VERSION = "1.3.2"
 
 WIDTH, HEIGHT = 1200,800
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -48,6 +48,10 @@ BULLET_COLOR = (255, 240, 100)
 ENEMY_COLOR  = (220, 60, 60)
 ENEMY_ALERT  = (255, 130, 30)
 EXTRACT_COLOR= (255, 220, 50)
+MENU_BG      = (10, 16, 28)   # night-blue menu field (BG_DARK is grass green)
+MENU_GRID    = (17, 27, 43)
+MENU_ACCENT  = (242, 201, 76) # trailer title yellow (menu headings / rules)
+MENU_RULE    = (54, 74, 104)  # hairline divider used under menu headings
 DROP_COLOR   = (180, 80, 220)
 WHITE        = (255, 255, 255)
 GRAY         = (160, 160, 160)
@@ -68,7 +72,11 @@ GUN_TYPES = {
                 "mag": 6,  "reload": 110},
     "sniper":  {"name": "狙击枪", "icon": "", "cooldown": 50, "speed": 22, "damage": 4, "bullets": 1, "spread": 0,    "cost": 2500, "color": (60, 200, 80),
                 "mag": 5,  "reload": 130},
+    "cannon":  {"name": "榴弹炮", "icon": "", "cooldown": 75, "speed": 6,  "damage": 5, "bullets": 1, "spread": 0,    "cost": 4000, "color": (235, 130, 55),
+                "mag": 4,  "reload": 150},
 }
+# Canonical weapon order: HUD bar, number keys, wheel cycle, Boss drops
+GUN_ORDER = ["pistol", "rifle", "shotgun", "sniper", "cannon"]
 GUN_SHOP_PRICES = {k: v["cost"] for k, v in GUN_TYPES.items() if v["cost"] > 0}
 
 
@@ -453,6 +461,10 @@ super_chaser_broadcast_timer = 0
 # Hold extraction: player must stay in zone for EXTRACT_HOLD_FRAMES to complete
 EXTRACT_HOLD_FRAMES = 180    # 3 seconds (60fps * 3)
 extract_hold_timer  = 0      # Current hold frames (0 = not in zone)
+EXTRACT_LIFT_FRAMES = 150    # helicopter landing / lift-off cinematic (2.5s)
+extract_anim_timer  = 0      # >0 = playing the lift-off; the menu waits for it
+extract_lift_pos    = None   # world-space pad centre, captured before the pad is
+                             # cleared so the shot still knows where to land
 
 # ==============================
 # Enemy / Patrol system
@@ -647,9 +659,14 @@ score        = 0
 lives        = 10
 max_lives    = 10
 armor        = 0          # Armor count (each absorbs one hit)
+player_invuln = 0         # I-frames left after taking a hit
+HIT_INVULN_FRAMES = 48    # ~0.8s grace: contact damage must not chain-kill
 danger_level = 0.0
 mission_timer = 500 * 60
 MISSION_TIME  = 500 * 60
+
+# Time of day (v1.3): rolled once per run, tints the battlefield
+time_of_day = "day"        # "day" / "dusk" / "night"
 
 # ==============================
 # Supply station prices
@@ -694,6 +711,7 @@ in_main_menu     = True     # Main menu state (shown on startup/after ending)
 in_death_screen  = False    # Extraction failure death screen
 awaiting_departure = False    # Returning from shop to main menu, ready to redeploy
 in_settings      = False    # Settings screen
+in_stats         = False    # Career stats screen (main menu)
 tutorial_shown    = False    # Whether tutorial has been shown (persistent)
 showing_tutorial  = False    # Whether tutorial is currently showing
 footstep_timer    = 0        # Footstep sound timer
@@ -746,6 +764,12 @@ ADV_TASK_HIGH_EXTRACT   = 3    # 3 extractions with est>400 in extreme mode
 adv_boss_kills           = 0    # Advanced task: Boss kills in extreme mode (persistent)
 adv_chaser_scared        = 0    # Advanced task: Super Chaser scares in extreme mode (persistent)
 adv_high_extract         = 0    # Advanced task: high-est extraction count in extreme mode (persistent)
+
+# Career stats (persist across runs, shown on the main-menu stats screen)
+total_extractions        = 0    # Successful extractions, lifetime
+total_kills              = 0    # Enemies + Bosses killed, lifetime
+best_score               = 0    # Highest score banked on a successful extraction
+total_runs               = 0    # Missions launched, lifetime
 
 # Task panel display control
 show_task_panel           = False # Show task panel (P to open, 6 to close)
@@ -1383,6 +1407,9 @@ def blit_unit(unit, pose, sx, sy, box_w, box_h, frame=0,
 # ==============================
 def draw_player(wx, wy):
     """Draw player (v1.2 pixel sprite, 4-directional)."""
+    # Blink during the post-hit grace window so the i-frames read on screen
+    if player_invuln > 0 and (player_invuln // 6) % 2 == 1:
+        return
     sx, sy = w2s(wx, wy)
     pose, flip = _pose_and_flip(face_angle)
     moving = (player_moving_phase > 0)
@@ -1543,6 +1570,28 @@ def resolve_wall_collision(ent_x, ent_y, ent_w, ent_h, walls_list):
         entity_rect.x = ent_x
 
     return ent_x, ent_y
+
+
+def knockback_player(src_x, src_y, force=44.0):
+    """Shove the player away from a melee attacker.
+
+    Boss/Chaser hitboxes stay glued to the player once they catch up, so without
+    a push the collision is re-detected every frame and the lives counter drains
+    almost instantly. Pushing the player out of the hitbox (and out of walls)
+    gives the i-frame window room to breathe.
+    """
+    global player_x, player_y
+    dx = (player_x + player_size / 2.0) - src_x
+    dy = (player_y + player_size / 2.0) - src_y
+    dist = math.hypot(dx, dy)
+    if dist < 0.001:
+        dx, dy, dist = 1.0, 0.0, 1.0
+    tx = player_x + dx / dist * force
+    ty = player_y + dy / dist * force
+    tx = max(0.0, min(float(WORLD_W - player_size), tx))
+    ty = max(0.0, min(float(WORLD_H - player_size), ty))
+    tx, ty = resolve_wall_collision(tx, ty, player_size, player_size, walls)
+    player_x, player_y = tx, ty
 
 
 def draw_boss(b):
@@ -2006,6 +2055,250 @@ def draw_reload_gauge():
     screen.blit(label, (cx - label.get_width() // 2, cy - label.get_height() - 1))
 
 
+# ==============================
+# Time of day (v1.3)
+# ==============================
+TIME_OF_DAY_NAMES = {"day": "白昼", "dusk": "黄昏", "night": "夜晚"}
+TIME_OF_DAY_ICON = {"day": "☀", "dusk": "☁", "night": "☾"}
+TIME_OF_DAY_HUD_COLOR = {"day": (255, 232, 150), "dusk": (255, 172, 92),
+                         "night": (152, 184, 255)}
+
+
+def roll_time_of_day():
+    """Pick the lighting for a fresh run: day 30% / dusk 25% / night 45%.
+
+    Night is deliberately the most common roll -- the torch cone is the headline
+    feature of the time-of-day system, and a 20% night rate meant most play
+    sessions never saw it.
+    """
+    global time_of_day
+    r = random.random()
+    time_of_day = "day" if r < 0.30 else ("dusk" if r < 0.55 else "night")
+
+
+_TINT_CACHE = {}
+_NIGHT_BEAM = {}           # cached torch masks, rebuilt only when the facing changes
+_NIGHT_DARK = [None]       # cached full-screen sheet of night
+
+# Night torch geometry.
+#
+# Night is painted as a darkness sheet with a hole punched in it, NOT as a
+# bright layer poured on top. Pouring light over a near-black screen only makes
+# a white fog that erases the terrain (v1.3.0: "too bright to see anything"),
+# and turning it down makes the torch invisible (v1.3.1). Punching a hole keeps
+# the real grass / walls / loot visible inside the beam, just dimmed and warm --
+# and the lit ground is still much darker than daylight, which is the point.
+NIGHT_DARK_ALPHA  = 250    # darkness outside the beam: world is almost black
+NIGHT_LIT_ALPHA   = 150    # darkness INSIDE the beam: night, but readable
+NIGHT_CONE_RANGE  = 300    # how far the 90-degree beam reaches
+NIGHT_CONE_SPREAD = 45     # half-angle -> 90 degrees total, along face_angle
+NIGHT_BODY_RADIUS = 110    # pool of light at the player's feet
+NIGHT_WARM_ALPHA  = 36     # warm torch tint on lit ground (cold blue outside)
+_NIGHT_SEGMENTS   = 40     # 8 slices showed as hard wedges at 460px range
+_NIGHT_RGB        = (8, 14, 46)
+_NIGHT_WARM_RGB   = (255, 238, 196)
+
+
+def _night_cone_range():
+    """Beam reach, extended for recording. TRAILER_CONE lets the capture script
+    widen the torch without touching the shipped geometry."""
+    return int(os.environ.get("TRAILER_CONE", NIGHT_CONE_RANGE))
+
+
+def _tint_overlay(rgba):
+    """One reusable full-screen tint surface per colour."""
+    surf = _TINT_CACHE.get(rgba)
+    if surf is None:
+        surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        surf.fill(rgba)
+        _TINT_CACHE[rgba] = surf
+    return surf
+
+
+def _night_darkness():
+    """Cached full-screen sheet of night (re-copied each frame, then punched)."""
+    if _NIGHT_DARK[0] is None:
+        surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        surf.fill(_NIGHT_RGB + (NIGHT_DARK_ALPHA,))
+        _NIGHT_DARK[0] = surf
+    return _NIGHT_DARK[0]
+
+
+def _beam_shell(dst, ox, oy, angle_deg, half, r_in, r_out, rgba, steps=10):
+    """One arc-bounded slice of the beam: an annulus sector from r_in to r_out.
+
+    Shells never overlap, so each one can be given its own exact alpha instead
+    of stacking half-transparent layers and hoping the sum lands somewhere sane.
+    """
+    a0 = math.radians(angle_deg) - half
+    a1 = math.radians(angle_deg) + half
+    pts = []
+    for k in range(steps + 1):                      # outer arc, near -> far side
+        ang = a0 + (a1 - a0) * k / steps
+        pts.append((ox + math.cos(ang) * r_out, oy + math.sin(ang) * r_out))
+    for k in range(steps, -1, -1):                  # inner arc, back again
+        ang = a0 + (a1 - a0) * k / steps
+        pts.append((ox + math.cos(ang) * r_in, oy + math.sin(ang) * r_in))
+    pygame.draw.polygon(dst, rgba, pts)
+
+
+def _torch_masks(angle_deg):
+    """Build (or reuse) the two torch masks for a given facing.
+
+    Returns (hole, warm, size).
+      * hole - black with alpha = how much darkness the torch removes. It is
+        subtracted from the night sheet, and being black it only ever eats
+        alpha, so the lit ground keeps the cold blue night tint.
+      * warm - the same shape in torch colour at a much lower alpha, so lit
+        ground reads as torch light instead of as left-over daylight.
+    """
+    key = int(round(angle_deg)) % 360
+    if _NIGHT_BEAM.get("key") == key and _NIGHT_BEAM.get("hole") is not None:
+        return _NIGHT_BEAM["hole"], _NIGHT_BEAM["warm"], _NIGHT_BEAM["size"]
+
+    R = _night_cone_range()
+    size = R * 2 + 40
+    if _NIGHT_BEAM.get("size") != size:
+        _NIGHT_BEAM["hole"] = pygame.Surface((size, size), pygame.SRCALPHA)
+        _NIGHT_BEAM["warm"] = pygame.Surface((size, size), pygame.SRCALPHA)
+        _NIGHT_BEAM["tmp"] = pygame.Surface((size, size), pygame.SRCALPHA)
+        _NIGHT_BEAM["size"] = size
+    hole = _NIGHT_BEAM["hole"]
+    warm = _NIGHT_BEAM["warm"]
+    tmp = _NIGHT_BEAM["tmp"]
+    hole.fill((0, 0, 0, 0))
+    warm.fill((0, 0, 0, 0))
+    ox = oy = size // 2
+    cut = max(0, NIGHT_DARK_ALPHA - NIGHT_LIT_ALPHA)   # peak darkness removed
+
+    # 1) 90-degree beam along the facing, dimming with distance
+    half = math.radians(NIGHT_CONE_SPREAD)
+    for i in range(_NIGHT_SEGMENTS):
+        r_in = R * i / _NIGHT_SEGMENTS
+        r_out = R * (i + 1) / _NIGHT_SEGMENTS
+        t = 1.0 - i / _NIGHT_SEGMENTS                  # 1 near -> 0 far
+        a = int(cut * (t ** 0.85))
+        if a <= 0:
+            continue
+        _beam_shell(hole, ox, oy, angle_deg, half, r_in, r_out, (0, 0, 0, a))
+        _beam_shell(warm, ox, oy, angle_deg, half, r_in, r_out,
+                    _NIGHT_WARM_RGB + (max(1, NIGHT_WARM_ALPHA * a // max(1, cut)),))
+
+    # 2) pool of light at the player's feet, so turning never leaves them blind.
+    #    Many thin rings instead of four fat ones -- four bands read as a target
+    #    reticle, ten rings read as a falloff. MAX blend, so overlays never stack.
+    rings = 26
+    for i in range(rings):
+        rr = int(NIGHT_BODY_RADIUS * (1.0 - i / float(rings)))
+        # cosine falloff: bright core, no visible ring edge at the rim
+        k = 0.26 + 0.74 * math.cos((1.0 - i / float(rings - 1)) * math.pi / 2.0) ** 1.4
+        a = int(cut * k)
+        wa = max(1, NIGHT_WARM_ALPHA * a // max(1, cut))
+        tmp.fill((0, 0, 0, 0))
+        pygame.draw.circle(tmp, (0, 0, 0, a), (ox, oy), rr)
+        hole.blit(tmp, (0, 0), special_flags=pygame.BLEND_RGBA_MAX)
+        tmp.fill((0, 0, 0, 0))
+        pygame.draw.circle(tmp, _NIGHT_WARM_RGB + (wa,), (ox, oy), rr)
+        warm.blit(tmp, (0, 0), special_flags=pygame.BLEND_RGBA_MAX)
+
+    _NIGHT_BEAM["key"] = key
+    return hole, warm, size
+
+
+def draw_time_of_day():
+    """Tint the battlefield by time of day.
+
+    Called after the world/units are drawn and before the HUD, so HUD text
+    stays crisp. At night a full-screen sheet of darkness is laid down and the
+    torch punches a 90-degree hole in it, anchored to the player's *screen*
+    position -- not the screen centre, because the camera clamps at map edges
+    and a centre-anchored torch would slide off the player near a border.
+    """
+    if time_of_day == "dusk":
+        screen.blit(_tint_overlay((255, 132, 40, 42)), (0, 0))
+    elif time_of_day == "night":
+        px, py = w2s(player_x, player_y)
+        hole, warm, size = _torch_masks(face_angle)
+        dark = _night_darkness().copy()
+        dark.blit(hole, (int(px) - size // 2, int(py) - size // 2),
+                  special_flags=pygame.BLEND_RGBA_SUB)
+        screen.blit(dark, (0, 0))
+        screen.blit(warm, (int(px) - size // 2, int(py) - size // 2))
+
+
+def draw_extract_lift():
+    """Landing-and-lift-off shot played once the hold timer fills.
+
+    do_extraction() used to jump straight to the main menu, so the tutorial line
+    ("直升机会降落接应") never appeared on screen: the pad just vanished. This
+    gives the run an ending -- dust, a descending airframe, a rising one.
+    """
+    global extract_anim_timer, in_main_menu, last_result
+    t = 1.0 - extract_anim_timer / float(EXTRACT_LIFT_FRAMES)   # 0 -> 1
+    # The pad is already gone by the time this runs (do_extraction clears it to
+    # stop the player re-triggering), so use the remembered touchdown point.
+    pad = extract_lift_pos if extract_lift_pos is not None else \
+        ([extract_zone[0] + extract_size / 2.0, extract_zone[1] + extract_size / 2.0]
+         if extract_zone is not None else [player_x, player_y])
+    zx, zy = w2s(pad[0], pad[1])
+
+    # dust ring on touchdown, then rotor wash
+    ov = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    for k in range(5):
+        rr = int(40 + k * 26 + t * 120)
+        a = int(70 * (1.0 - k / 5.0) * (0.45 + 0.55 * math.sin(t * math.pi)))
+        pygame.draw.circle(ov, (208, 198, 168, max(0, a)), (int(zx), int(zy)), rr, 3)
+    screen.blit(ov, (0, 0))
+
+    # airframe: descends for the first 45%, hovers, then climbs away
+    if t < 0.45:
+        k = t / 0.45
+        hy = zy - 300 * (1.0 - k) ** 2
+        shadow = 255
+    elif t < 0.62:
+        hy = zy
+        shadow = 235
+    else:
+        k = (t - 0.62) / 0.38
+        hy = zy - 520 * (k ** 1.35)
+        shadow = int(235 * (1.0 - k))
+    hx = zx
+
+    # ground shadow shrinks as it climbs
+    sh = pygame.Surface((120, 40), pygame.SRCALPHA)
+    pygame.draw.ellipse(sh, (0, 0, 0, int(90 * shadow / 255.0)), (0, 0, 120, 40))
+    screen.blit(sh, (int(hx) - 60, int(zy) + 6))
+
+    # rotor wash blur
+    rot = 26 + int(10 * math.sin(t * 46))
+    body = pygame.Surface((96, 40), pygame.SRCALPHA)
+    pygame.draw.ellipse(body, (46, 54, 66), (10, 10, 76, 24))
+    pygame.draw.ellipse(body, (30, 36, 46), (10, 10, 76, 24), 3)
+    pygame.draw.rect(body, (46, 54, 66), (78, 16, 18, 8))          # tail boom
+    pygame.draw.polygon(body, (58, 68, 82), [(88, 10), (96, 6), (96, 22), (88, 18)])
+    pygame.draw.ellipse(body, (150, 200, 240), (22, 14, 26, 12))    # canopy
+    screen.blit(body, (int(hx) - 48, int(hy) - 20))
+
+    rotor = pygame.Surface((rot * 2 + 6, 6), pygame.SRCALPHA)
+    rotor.fill((210, 220, 235, 150))
+    screen.blit(rotor, (int(hx) - rot - 3, int(hy) - 26))
+    pygame.draw.line(screen, (200, 210, 226),
+                     (hx - rot * 0.72, hy - 24), (hx + rot * 0.72, hy - 24), 2)
+
+    # caption
+    msg = "直升机降落中…" if t < 0.6 else "升空撤离！"
+    cap = font_big.render(msg, True, EXTRACT_COLOR)
+    cy = 200
+    bg = pygame.Surface((cap.get_width() + 60, cap.get_height() + 20), pygame.SRCALPHA)
+    bg.fill((6, 10, 18, 180))
+    screen.blit(bg, (WIDTH // 2 - bg.get_width() // 2, cy - 10))
+    screen.blit(cap, (WIDTH // 2 - cap.get_width() // 2, cy))
+
+    if t >= 0.999:
+        extract_anim_timer = 0
+        in_main_menu = True
+
+
 def draw_hud():
     # 76px: font_normal(32) renders ~44px tall, so the score row needs the room
     bar_bg = pygame.Surface((WIDTH, 76), pygame.SRCALPHA)
@@ -2013,6 +2306,13 @@ def draw_hud():
     screen.blit(bar_bg, (0, 0))
 
     screen.blit(font_normal.render(f"分数: {score}", True, WHITE), (12, 2))
+
+    # Time-of-day tag (top-right, above the weapon bar)
+    tod_icon = TIME_OF_DAY_ICON.get(time_of_day, "")
+    tod_name = TIME_OF_DAY_NAMES.get(time_of_day, "白昼")
+    tod_col = TIME_OF_DAY_HUD_COLOR.get(time_of_day, WHITE)
+    tod_surf = font_normal.render(f"{tod_icon} {tod_name}", True, tod_col)
+    screen.blit(tod_surf, (WIDTH - 16 - tod_surf.get_width(), 20))
 
     # HP: draw one heart icon + count (e.g., ♥ x 5)
     hx = 250
@@ -2126,7 +2426,7 @@ def draw_hud():
         status_text = font_small.render(f"◎ 搜索中... {pct}%  别走远！",
                                         True, (100, 220, 255))
     else:
-        status_text = font_small.render("● J搜索  |  停留3秒撤离  |  5存档 9读档",
+        status_text = font_small.render("● J搜索  |  走到撤离点停留3秒  |  ESC暂停",
                                         True, (100, 220, 100))
     screen.blit(status_text, (WIDTH // 2 - status_text.get_width() // 2, HEIGHT - 22))
 
@@ -2170,7 +2470,7 @@ def draw_hud():
                             time_bar_y - 26))
 
     # Weapon bar (show all owned guns, highlight current) - never hide on ammo empty
-    gun_list = ["pistol", "rifle", "shotgun", "sniper"]
+    gun_list = GUN_ORDER
     gun_x = WIDTH - 220
     for i, gn in enumerate(gun_list):
         if gn in owned_guns:
@@ -2180,7 +2480,7 @@ def draw_hud():
             g_label = font_small.render(f"{'▶' if is_current else ' '} {g['name']}", True, g_color)
             screen.blit(g_label, (gun_x, 50 + i * 22))
     # Scroll wheel hint
-    wheel_hint = font_small.render("Tab/滚轮/1-4 切枪", True, (120, 120, 120))
+    wheel_hint = font_small.render("Tab/滚轮/1-5 切枪", True, (120, 120, 120))
     screen.blit(wheel_hint, (gun_x, 50 + len([g for g in gun_list if g in owned_guns]) * 22 + 2))
 
     # Ammo depleted hint (centered red text)
@@ -2243,18 +2543,20 @@ def draw_shop():
     cy += 30
 
     gun_options = [
-        ("4", "步枪", 800, score >= 800 and "rifle" not in owned_guns,
+        ("4", "步枪", GUN_TYPES["rifle"]["cost"], score >= GUN_TYPES["rifle"]["cost"] and "rifle" not in owned_guns,
          "已拥有" if "rifle" in owned_guns else ("800 分" if score >= 800 else "分数不足")),
-        ("5", "霰弹枪", 1500, score >= 1500 and "shotgun" not in owned_guns,
+        ("5", "霰弹枪", GUN_TYPES["shotgun"]["cost"], score >= GUN_TYPES["shotgun"]["cost"] and "shotgun" not in owned_guns,
          "已拥有" if "shotgun" in owned_guns else ("1500 分" if score >= 1500 else "分数不足")),
-        ("6", "狙击枪", 2500, score >= 2500 and "sniper" not in owned_guns,
+        ("6", "狙击枪", GUN_TYPES["sniper"]["cost"], score >= GUN_TYPES["sniper"]["cost"] and "sniper" not in owned_guns,
          "已拥有" if "sniper" in owned_guns else ("2500 分" if score >= 2500 else "分数不足")),
+        ("7", "榴弹炮", GUN_TYPES["cannon"]["cost"], score >= GUN_TYPES["cannon"]["cost"] and "cannon" not in owned_guns,
+         "已拥有" if "cannon" in owned_guns else ("4000 分" if score >= 4000 else "分数不足")),
     ]
     for key, label, cost, available, status in gun_options:
         color = WHITE if available else GRAY
         line = font_normal.render(f"[{key}] {label}   {status}", True, color)
         screen.blit(line, (panel_x + 50, cy))
-        cy += 32
+        cy += 28
 
     cy += 10
 
@@ -2323,18 +2625,20 @@ def draw_transfer_station():
     cy += 30
 
     gun_options = [
-        ("4", "步枪", 800, score >= 800 and "rifle" not in owned_guns,
+        ("4", "步枪", GUN_TYPES["rifle"]["cost"], score >= GUN_TYPES["rifle"]["cost"] and "rifle" not in owned_guns,
          "已拥有" if "rifle" in owned_guns else ("800 分" if score >= 800 else "分数不足")),
-        ("5", "霰弹枪", 1500, score >= 1500 and "shotgun" not in owned_guns,
+        ("5", "霰弹枪", GUN_TYPES["shotgun"]["cost"], score >= GUN_TYPES["shotgun"]["cost"] and "shotgun" not in owned_guns,
          "已拥有" if "shotgun" in owned_guns else ("1500 分" if score >= 1500 else "分数不足")),
-        ("6", "狙击枪", 2500, score >= 2500 and "sniper" not in owned_guns,
+        ("6", "狙击枪", GUN_TYPES["sniper"]["cost"], score >= GUN_TYPES["sniper"]["cost"] and "sniper" not in owned_guns,
          "已拥有" if "sniper" in owned_guns else ("2500 分" if score >= 2500 else "分数不足")),
+        ("7", "榴弹炮", GUN_TYPES["cannon"]["cost"], score >= GUN_TYPES["cannon"]["cost"] and "cannon" not in owned_guns,
+         "已拥有" if "cannon" in owned_guns else ("4000 分" if score >= 4000 else "分数不足")),
     ]
     for key, label, cost, available, status in gun_options:
         color = WHITE if available else GRAY
         line = font_normal.render(f"[{key}] {label}   {status}", True, color)
         screen.blit(line, (panel_x + 50, cy))
-        cy += 32
+        cy += 28
 
     cy += 10
 
@@ -2349,16 +2653,12 @@ def draw_transfer_station():
 
 def show_settings():
     """Draw settings screen"""
-    screen.fill(BG_DARK)
-    for i in range(0, HEIGHT, 40):
-        pygame.draw.line(screen, (20, 25, 45), (0, i), (WIDTH, i), 1)
-    for i in range(0, WIDTH, 40):
-        pygame.draw.line(screen, (20, 25, 45), (i, 0), (i, HEIGHT), 1)
+    draw_menu_backdrop()
 
-    cy = 60
-    title = font_huge.render("设置", True, (140, 180, 255))
+    cy = 48
+    title = font_huge.render("设置", True, MENU_ACCENT)
     screen.blit(title, (WIDTH // 2 - title.get_width() // 2, cy))
-    cy += title.get_height() + 40
+    cy += title.get_height() + 24
 
     # SFX toggle
     toggle_text = "开" if sfx_enabled else "关"
@@ -2386,18 +2686,18 @@ def show_settings():
     pygame.draw.rect(screen, (100, 255, 100), (bar_x, cy, int(bar_w * bgm_volume), 12), border_radius=6)
     hint2 = font_small.render("[↑ ↓] 调节", True, (120, 120, 120))
     screen.blit(hint2, (WIDTH // 2 + bar_w // 2 + 10, cy - 2))
-    cy += 50
+    cy += 36
 
     # Controls
     section = font_normal.render("── 操作说明 ──", True, (255, 200, 100))
     screen.blit(section, (WIDTH // 2 - section.get_width() // 2, cy))
-    cy += 28
+    cy += section.get_height() + 2     # font_normal(32) is ~44px tall, not 28
     controls = [
         ("WASD / 方向键", "移动角色"),
         ("J", "搜索物资"),
         ("空格", "射击"),
         ("R", "换弹（弹匣打空会自动换弹）"),
-        ("1-4 / Tab / 滚轮", "切换武器"),
+        ("1-5 / Tab / 滚轮", "切换武器"),
         ("ESC", "暂停游戏"),
         ("5", "存档"),
         ("9", "读档"),
@@ -2410,7 +2710,7 @@ def show_settings():
         # taller than 20px, which made these lines overlap each other
         cy += ctrl_line.get_height() + 2
 
-    cy += 20
+    cy += 12
     back_hint = font_normal.render("[ESC] 返回主菜单", True, (160, 160, 160))
     screen.blit(back_hint, (WIDTH // 2 - back_hint.get_width() // 2, cy))
 
@@ -2422,14 +2722,10 @@ def show_settings():
 
 def show_tutorial():
     """Draw tutorial/controls guide screen"""
-    screen.fill(BG_DARK)
-    for i in range(0, HEIGHT, 40):
-        pygame.draw.line(screen, (20, 25, 45), (0, i), (WIDTH, i), 1)
-    for i in range(0, WIDTH, 40):
-        pygame.draw.line(screen, (20, 25, 45), (i, 0), (i, HEIGHT), 1)
+    draw_menu_backdrop()
 
     cy = 40
-    title = font_huge.render("操作指南", True, (255, 220, 100))
+    title = font_huge.render("操作指南", True, MENU_ACCENT)
     screen.blit(title, (WIDTH // 2 - title.get_width() // 2, cy))
     cy += title.get_height() + 24
 
@@ -2440,14 +2736,14 @@ def show_tutorial():
         ("搜索：", "走到物资旁按 J（停留1.5秒）"),
         ("射击：", "空格键（自动瞄准最近敌人）"),
         ("换弹：", "按 R；弹匣打空会自动换弹，换弹时无法射击"),
-        ("切换武器：", "数字键1-4 / Tab / 鼠标滚轮"),
+        ("切换武器：", "数字键1-5 / Tab / 鼠标滚轮"),
         ("撤离：", "走到黄色撤离点停留3秒，直升机会降落接应"),
         ("", ""),
         ("", "!  敌人会巡逻和追击 — Boss非常致命！"),
         ("", "阵亡时背包里未撤离的物资会丢失"),
         ("", "撤离后到商店购买装备"),
         ("", ""),
-        ("", "按 Enter 出发。祝你好运！"),
+        ("", "祝你好运！"),
     ]
 
     for key_t, desc in instructions:
@@ -2464,30 +2760,132 @@ def show_tutorial():
     # Blinking Enter hint
     if pygame.time.get_ticks() % 1000 < 600:
         enter_hint = font_normal.render("[Enter] 开始游戏", True, (100, 255, 150))
-        screen.blit(enter_hint, (WIDTH // 2 - enter_hint.get_width() // 2, HEIGHT - 80))
+        screen.blit(enter_hint, (WIDTH // 2 - enter_hint.get_width() // 2, HEIGHT - 62))
+
+
+_MENU_BACKDROP = None
+
+
+def _menu_backdrop_surface():
+    """Build the night-blue grid field once, then reuse it every frame.
+
+    This is the trailer's title-card look: 10/16/28 field, 40px grid, corners
+    darkened by a vignette so the heading in the middle reads brighter. It is
+    cached because every menu frame would otherwise redraw ~50 lines plus a
+    per-pixel gradient.
+    """
+    global _MENU_BACKDROP
+    if _MENU_BACKDROP is not None:
+        return _MENU_BACKDROP
+
+    field = pygame.Surface((WIDTH, HEIGHT)).convert()
+    field.fill(MENU_BG)
+    for i in range(0, HEIGHT + 1, 40):
+        pygame.draw.line(field, MENU_GRID, (0, i), (WIDTH, i), 1)
+    for i in range(0, WIDTH + 1, 40):
+        pygame.draw.line(field, MENU_GRID, (i, 0), (i, HEIGHT), 1)
+
+    # Vignette built small (75x50) and smoothscaled up: a full-res per-pixel
+    # loop is 960k set_at calls and visibly stalls the first menu frame.
+    vw, vh = 75, 50
+    vig = pygame.Surface((vw, vh), pygame.SRCALPHA)
+    for y in range(vh):
+        for x in range(vw):
+            dx = (x - vw / 2.0) / (vw / 2.0)
+            dy = (y - vh / 2.0) / (vh / 2.0)
+            d = min(1.0, math.hypot(dx * 0.72, dy) / 1.18)
+            vig.set_at((x, y), (0, 0, 0, int(150 * d * d)))
+    field.blit(pygame.transform.smoothscale(vig, (WIDTH, HEIGHT)), (0, 0))
+
+    _MENU_BACKDROP = field
+    return field
+
+
+def draw_menu_backdrop():
+    """Night-blue grid used by every full-screen menu.
+
+    BG_DARK is the *grass* green (45,140,50); filling a menu with it made the
+    main menu, the settings page and the tutorial read as an empty field with
+    text floating on it.
+    """
+    screen.blit(_menu_backdrop_surface(), (0, 0))
+
+
+def show_stats():
+    """Career stats screen (main menu, T to open, ESC to go back)."""
+    draw_menu_backdrop()
+
+    panel_w, panel_h = 560, 648
+    panel_x = WIDTH // 2 - panel_w // 2
+    panel_y = HEIGHT // 2 - panel_h // 2
+    panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+    panel.fill((20, 25, 50, 235))
+    pygame.draw.rect(panel, (60, 80, 140), (0, 0, panel_w, panel_h), 3, border_radius=12)
+    screen.blit(panel, (panel_x, panel_y))
+
+    cy = panel_y + 24
+    title = font_big.render("生涯战绩", True, EXTRACT_COLOR)
+    screen.blit(title, (WIDTH // 2 - title.get_width() // 2, cy))
+    cy += title.get_height() + 22
+
+    if total_runs == 0:
+        hint = font_small.render("还没有出动记录 —— 按 Enter 开始第一战", True, GRAY)
+        screen.blit(hint, (WIDTH // 2 - hint.get_width() // 2, cy))
+        cy += 30
+
+    rate = (total_extractions / total_runs * 100) if total_runs > 0 else 0.0
+    rows = [
+        ("成功撤离",   f"{total_extractions} 次"),
+        ("历史最高分", f"{best_score}"),
+        ("累计击杀",   f"{total_kills}"),
+        ("出动任务",   f"{total_runs} 次"),
+        ("撤离成功率", f"{rate:.0f}%"),
+    ]
+    for label, value in rows:
+        lab = font_normal.render(label, True, (200, 210, 230))
+        # font_big (56px) inside a 44px row made consecutive numbers overlap.
+        val = font_normal.render(value, True, WHITE)
+        screen.blit(lab, (panel_x + 60, cy))
+        screen.blit(val, (panel_x + panel_w - 60 - val.get_width(), cy))
+        cy += 52
+
+    cy += 12
+    div = font_small.render("── 难度解锁 ──", True, (200, 200, 100))
+    screen.blit(div, (WIDTH // 2 - div.get_width() // 2, cy))
+    cy += 32
+    for name, unlocked in (("困难模式", hard_mode_unlocked),
+                           ("极难模式", extreme_mode_unlocked)):
+        state_text = "已解锁" if unlocked else "未解锁"
+        color = (100, 255, 100) if unlocked else (170, 170, 180)
+        lab = font_normal.render(name, True, (200, 210, 230))
+        val = font_normal.render(state_text, True, color)
+        screen.blit(lab, (panel_x + 60, cy))
+        screen.blit(val, (panel_x + panel_w - 60 - val.get_width(), cy))
+        cy += 38
+
+    back = font_small.render("[ESC] 返回主菜单", True, (200, 200, 200))
+    screen.blit(back, (WIDTH // 2 - back.get_width() // 2, panel_y + panel_h - 46))
 
 
 def show_main_menu():
     """Draw main menu screen (start / after extraction / after failure)"""
-    screen.fill(BG_DARK)
-
-    # ---- Background decorative lines ----
-    for i in range(0, HEIGHT, 40):
-        pygame.draw.line(screen, (20, 25, 45), (0, i), (WIDTH, i), 1)
-    for i in range(0, WIDTH, 40):
-        pygame.draw.line(screen, (20, 25, 45), (i, 0), (i, HEIGHT), 1)
+    draw_menu_backdrop()
 
     cy = 60
 
     # ---- Game title ----
-    title_surf = font_huge.render("HeliOps", True, (255, 220, 50))
+    title_surf = font_huge.render("HeliOps", True, MENU_ACCENT)
     title_x = WIDTH // 2 - title_surf.get_width() // 2
     screen.blit(title_surf, (title_x, cy))
     cy += title_surf.get_height() + 4
 
     sub_surf = font_small.render("直升机撤离射击  ·  v%s" % GAME_VERSION, True, (160, 180, 220))
     screen.blit(sub_surf, (WIDTH // 2 - sub_surf.get_width() // 2, cy))
-    cy += sub_surf.get_height() + 30
+    # Hairline rule under the heading, same accent language as the trailer's
+    # title card.
+    rule_y = cy + sub_surf.get_height() + 12
+    pygame.draw.line(screen, MENU_RULE, (WIDTH // 2 - 230, rule_y), (WIDTH // 2 + 230, rule_y), 2)
+    cy = rule_y + 26
 
     # ---- Last result (extraction success indicator) ----
     if last_result is not None and last_result["reason"] == "extract_success":
@@ -2527,6 +2925,7 @@ def show_main_menu():
             mode_color = (100, 100, 100)
     menu_items.append(("D", mode_label, mode_color, True))
     menu_items.append(("S",   "设置",   (140, 180, 255), True))
+    menu_items.append(("T",   "生涯战绩", (255, 210, 120), True))
     menu_items.append(("Q", "退出", (180, 180, 180), True))
 
     difficulty_y = 0
@@ -2749,7 +3148,7 @@ def show_game_over():
     go_text      = font_huge.render(title, True, title_color)
     sub_text     = font_normal.render(subtitle, True, GRAY)
     sc_text      = font_big.render(f"最终得分: {score}", True, WHITE)
-    restart_text = font_normal.render("R 重开  |  9 读档  |  Q 退出", True, GRAY)
+    restart_text = font_normal.render("R 重开  |  Q 退出到主菜单（进度自动保存）", True, GRAY)
 
     screen.blit(go_text,      (WIDTH // 2 - go_text.get_width() // 2,      HEIGHT // 2 - 100))
     screen.blit(sub_text,     (WIDTH // 2 - sub_text.get_width() // 2,     HEIGHT // 2 - 50))
@@ -2760,7 +3159,8 @@ def show_game_over():
 def reset_game(reset_score=True):
     global player_x, player_y, cam_x, cam_y, bullets, enemies, supplies, backpack, enemy_bullets
     global score, lives, armor, extract_zone, extract_multiplier
-    global danger_level, supply_spawn_timer, enemy_spawn_timer, bullet_cooldown
+    global extract_anim_timer, extract_lift_pos, danger_level
+    global supply_spawn_timer, enemy_spawn_timer, bullet_cooldown
     global ammo_bonus, extraction_message, extraction_message_timer, game_over
     global mission_timer, game_over_reason, extract_hold_timer, in_shop
     global searching_supply, search_timer, search_message, search_message_timer
@@ -2772,8 +3172,11 @@ def reset_game(reset_score=True):
     global current_gun, owned_guns
     global face_angle, player_moving_phase
     global extreme_plays_remaining, extreme_mode_active, search_message, search_message_timer
+    global player_invuln
 
     awaiting_departure = False
+    player_invuln = 0
+    roll_time_of_day()      # fresh lighting every run
     player_x = float(WORLD_W // 2)
     player_y = float(WORLD_H // 2)
     cam_x    = player_x - WIDTH  // 2
@@ -2789,6 +3192,8 @@ def reset_game(reset_score=True):
     armor    = 0
     extract_multiplier  = 1.0
     extract_hold_timer  = 0
+    extract_anim_timer  = 0
+    extract_lift_pos    = None
     danger_level        = 0.0
     supply_spawn_timer  = 0
     enemy_spawn_timer   = 0
@@ -2862,6 +3267,7 @@ def restart_mission():
     search_message = f"读档完成 - 弹药: {bullet_count}"
     search_message_timer = 180
     mission_timer = MISSION_TIME   # Timer reset
+    roll_time_of_day()             # redeploy also re-rolls the lighting
     extract_zone = [float(random.randint(40, WORLD_W - extract_size - 40)),
                     float(random.randint(80, WORLD_H - extract_size - 40))]
     spawn_walls()
@@ -3114,14 +3520,46 @@ def do_extraction():
         check_adv_tasks()
     # Task 3: 2 Boss kills in single hard run - zero on extract (fail if incomplete)
     mission_boss_kills = 0
+    tally_run(True)    # lifetime: +1 extraction, maybe a new best score
     auto_save()   # Auto-save on extraction success (character growth data)
-    in_main_menu = True
+    # Don't cut to the menu here: the lift-off shot finishes first and flips
+    # in_main_menu itself (see draw_extract_lift). Clear the pad and the hold
+    # timer or the player -- still standing on it -- refills the timer and
+    # re-triggers extraction every 3s while the helicopter is taking off.
+    global extract_anim_timer, extract_zone, extract_lift_pos
+    extract_anim_timer = EXTRACT_LIFT_FRAMES
+    # Remember where the pad was: draw_extract_lift() needs the touchdown point
+    # for the whole 2.5s shot, and the pad itself has to go (see above).
+    # Fall back to the player if the pad is already gone -- do_extraction() can
+    # be called from a state that never had one (tests, edge-case code paths).
+    if extract_zone is not None:
+        extract_lift_pos = [extract_zone[0] + extract_size / 2.0,
+                            extract_zone[1] + extract_size / 2.0]
+    else:
+        extract_lift_pos = [player_x, player_y]
+    extract_zone = None
+    extract_hold_timer = 0
     return True
 
 
 # ==============================
 # Save / Load
 # ==============================
+def tally_run(extracted=False):
+    """Fold a finished run into the lifetime career counters.
+
+    Called exactly once per run end: from do_extraction() on success and from
+    every death branch (shot down by a patrol / Boss / Chaser / Super Chaser /
+    enemy bullet) on failure.
+    """
+    global total_runs, total_extractions, best_score
+    total_runs += 1
+    if extracted:
+        total_extractions += 1
+        if score > best_score:
+            best_score = score
+
+
 def save_game():
     global save_message, save_message_timer
     state = {
@@ -3159,6 +3597,8 @@ def save_game():
         "extraction_message_timer": extraction_message_timer,
         "estimated_value": estimated_value,
         "current_gun": current_gun, "owned_guns": list(owned_guns),
+        "total_extractions": total_extractions, "total_kills": total_kills,
+        "best_score": best_score, "total_runs": total_runs,
     }
     try:
         with open(SAVE_FILE, "wb") as f:
@@ -3191,6 +3631,8 @@ def auto_save():
         "adv_chaser_scared": adv_chaser_scared,
         "adv_high_extract": adv_high_extract,
         "current_gun": current_gun, "owned_guns": list(owned_guns),
+        "total_extractions": total_extractions, "total_kills": total_kills,
+        "best_score": best_score, "total_runs": total_runs,
         "sfx_volume": sfx_volume, "bgm_volume": bgm_volume,
         "tutorial_shown": tutorial_shown,
     }
@@ -3211,6 +3653,7 @@ def auto_load(reset_score=False):
     global boss_token_count, hard_mode_unlocked
     global hm_boss_kills, hm_super_chaser_scared, extreme_mode_permanent, extreme_mode_unlocked
     global extreme_plays_remaining, adv_boss_kills, adv_chaser_scared, adv_high_extract
+    global total_extractions, total_kills, best_score, total_runs
     global sfx_volume, bgm_volume
     global tutorial_shown
     if not os.path.exists(AUTO_SAVE_FILE):
@@ -3241,6 +3684,10 @@ def auto_load(reset_score=False):
         adv_boss_kills = state.get("adv_boss_kills", 0)
         adv_chaser_scared = state.get("adv_chaser_scared", 0)
         adv_high_extract = state.get("adv_high_extract", 0)
+        total_extractions = state.get("total_extractions", 0)
+        total_kills = state.get("total_kills", 0)
+        best_score = state.get("best_score", 0)
+        total_runs = state.get("total_runs", 0)
         sfx_volume = state.get("sfx_volume", 0.6)
         bgm_volume = state.get("bgm_volume", 0.3)
         tutorial_shown = state.get("tutorial_shown", False)
@@ -3251,7 +3698,8 @@ def auto_load(reset_score=False):
 
 def load_game():
     global player_x, player_y, cam_x, cam_y, bullets, enemy_bullets
-    global enemies, supplies, backpack, score, lives, armor
+    global enemies, supplies, backpack, score, lives, armor, player_invuln
+    global total_extractions, total_kills, best_score, total_runs
     global extract_zone, extract_multiplier, extract_hold_timer
     global danger_level, supply_spawn_timer, enemy_spawn_timer
     global bullet_cooldown, ammo_bonus, bullet_count, max_bullets, ammo_empty_timer
@@ -3289,6 +3737,11 @@ def load_game():
         score = state["score"]
         lives = state["lives"]
         armor = state["armor"]
+        player_invuln = 0          # never inherit i-frames from a loaded save
+        total_extractions = state.get("total_extractions", 0)
+        total_kills = state.get("total_kills", 0)
+        best_score = state.get("best_score", 0)
+        total_runs = state.get("total_runs", 0)
         extract_zone = state["extract_zone"]
         extract_multiplier = state["extract_multiplier"]
         extract_hold_timer = state["extract_hold_timer"]
@@ -3388,7 +3841,7 @@ try:
                 if event.key == pygame.K_TAB:
                     wheel_event = True; wheel_dir = 1   # Tab=next
             if wheel_event:
-                owned_gun_list = [g for g in ["pistol", "rifle", "shotgun", "sniper"] if g in owned_guns]
+                owned_gun_list = [g for g in GUN_ORDER if g in owned_guns]
                 if len(owned_gun_list) > 1:
                     cur_idx = owned_gun_list.index(current_gun) if current_gun in owned_gun_list else 0
                     if wheel_dir > 0:   # Down/next
@@ -3401,7 +3854,7 @@ try:
                     search_message_timer = 60
             if event.type == pygame.KEYDOWN:
                 # ---- Global pause toggle (ESC during gameplay) ----
-                if event.key == pygame.K_ESCAPE and not in_shop and not in_transfer and not in_death_screen and not in_main_menu and not in_settings and not game_over:
+                if event.key == pygame.K_ESCAPE and not in_shop and not in_transfer and not in_death_screen and not in_main_menu and not in_settings and not in_stats and not game_over:
                     paused = not paused
                     if paused:
                         search_message = "游戏暂停 | ESC继续 M主菜单 Q退出"
@@ -3436,6 +3889,12 @@ try:
                         set_bgm_volume(bgm_volume + 0.05)
                     elif event.key == pygame.K_DOWN:
                         set_bgm_volume(bgm_volume - 0.05)
+                    continue
+                # ---- Career stats screen keys ----
+                if in_stats:
+                    if event.key in (pygame.K_ESCAPE, pygame.K_RETURN):
+                        in_stats = False
+                        in_main_menu = True
                     continue
                 # ---- Tutorial screen keys ----
                 if showing_tutorial:
@@ -3508,6 +3967,9 @@ try:
                     elif event.key == pygame.K_s:
                         in_settings = True
                         in_main_menu = False
+                    elif event.key == pygame.K_t:
+                        in_stats = True
+                        in_main_menu = False
                     continue   # All other keys disabled on main menu, skip processing
                 if game_over:
                     if event.key == pygame.K_r:
@@ -3548,6 +4010,9 @@ try:
                     elif event.key == pygame.K_6:
                         if score >= 2500 and "sniper" not in owned_guns:
                             score -= 2500; owned_guns.add("sniper");  gun_mags["sniper"]  = mag_size("sniper"); auto_save()
+                    elif event.key == pygame.K_7:
+                        if score >= 4000 and "cannon" not in owned_guns:
+                            score -= 4000; owned_guns.add("cannon");  gun_mags["cannon"]  = mag_size("cannon"); auto_save()
                     elif event.key == pygame.K_RETURN:
                         restart_mission()
                 elif in_transfer:
@@ -3581,6 +4046,9 @@ try:
                     elif event.key == pygame.K_6:
                         if score >= 2500 and "sniper" not in owned_guns:
                             score -= 2500; owned_guns.add("sniper");  gun_mags["sniper"]  = mag_size("sniper"); auto_save()
+                    elif event.key == pygame.K_7:
+                        if score >= 4000 and "cannon" not in owned_guns:
+                            score -= 4000; owned_guns.add("cannon");  gun_mags["cannon"]  = mag_size("cannon"); auto_save()
                     elif event.key == pygame.K_RETURN:
                         extract_zone = [float(random.randint(40, WORLD_W - extract_size - 40)),
                                         float(random.randint(80, WORLD_H - extract_size - 40))]
@@ -3622,6 +4090,12 @@ try:
             pygame.display.flip()
             continue
 
+        # ---- Career stats screen ----
+        if in_stats:
+            show_stats()
+            pygame.display.flip()
+            continue
+
         # ---- Tutorial ----
         if showing_tutorial:
             show_tutorial()
@@ -3635,10 +4109,10 @@ try:
             continue
 
         if paused and not game_over and not in_shop and not in_transfer:
-            screen.fill(BG_DARK)
+            draw_menu_backdrop()
             p_title = font_big.render("已暂停", True, WHITE)
             screen.blit(p_title, (WIDTH // 2 - p_title.get_width() // 2, HEIGHT // 2 - 90))
-            p_hint = font_small.render("P 继续  |  Q 退出  |  5 存档  |  9 读档", True, GRAY)
+            p_hint = font_small.render("P 继续  |  Q 退出到主菜单（进度自动保存）", True, GRAY)
             screen.blit(p_hint, (WIDTH // 2 - p_hint.get_width() // 2, HEIGHT // 2 + 10))
             pygame.display.flip()
             continue
@@ -3824,11 +4298,10 @@ try:
 
             if bullet_cooldown > 0:
                 bullet_cooldown -= 1
-            # ---- Weapon switch (1-4) ----
+            # ---- Weapon switch (1-5) ----
             if not in_shop and not in_transfer:
-                gun_keys = [pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4]
-                gun_list = ["pistol", "rifle", "shotgun", "sniper"]
-                for ki, gn in zip(gun_keys, gun_list):
+                gun_keys = [pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5]
+                for ki, gn in zip(gun_keys, GUN_ORDER):
                     if keys[ki] and gn in owned_guns and current_gun != gn:
                         cancel_reload()          # swapping guns abandons the reload
                         current_gun = gn
@@ -4221,7 +4694,7 @@ try:
                             # Boss death random gun drop
                             gun_drop_roll = random.random()
                             if gun_drop_roll < 0.4:
-                                drop_gun = random.choice(["rifle", "shotgun", "sniper"])
+                                drop_gun = random.choice(GUN_ORDER[1:])
                                 if drop_gun not in owned_guns:
                                     owned_guns.add(drop_gun);  gun_mags[drop_gun]  = mag_size(drop_gun)
                                     search_message = f"Boss掉落: {GUN_TYPES[drop_gun]['name']}！"
@@ -4285,6 +4758,7 @@ try:
                             if e in enemies:
                                 enemies.remove(e)
                             enemies_killed.add(eid)
+                            total_kills += 1
                             score += int(50 * _dm(HM_REWARD_MULT, EM_REWARD_MULT))
                             # Enemy death drop supply point
                             supplies.append([float(e[0]), float(e[1]), "enemy_drop", 900])
@@ -4300,6 +4774,7 @@ try:
                         play_sfx('hit')
                         if boss[2] <= 0:
                             play_sfx('boss_die')
+                            total_kills += 1
                             score += int(500 * _dm(HM_REWARD_MULT, EM_REWARD_MULT))
                             for _ in range(3):
                                 supplies.append([float(boss[0] + random.randint(0, BOSS_SIZE - SUPPLY_SIZE)),
@@ -4309,7 +4784,7 @@ try:
                             # Boss death random gun drop
                             gun_drop_roll = random.random()
                             if gun_drop_roll < 0.4:
-                                drop_gun = random.choice(["rifle", "shotgun", "sniper"])
+                                drop_gun = random.choice(GUN_ORDER[1:])
                                 if drop_gun not in owned_guns:
                                     owned_guns.add(drop_gun);  gun_mags[drop_gun]  = mag_size(drop_gun)
                                     search_message = f"Boss掉落: {GUN_TYPES[drop_gun]['name']}！"
@@ -4344,18 +4819,24 @@ try:
             # ---- Player vs enemy collision ----
             player_rect   = pygame.Rect(player_x, player_y, player_size, player_size)
             hit_this_frame = False
+            if player_invuln > 0:
+                player_invuln -= 1
             for e in enemies[:]:
                 if pygame.Rect(e[0], e[1], enemy_size, enemy_size).colliderect(player_rect):
                     if e in enemies: enemies.remove(e)
+                    total_kills += 1
                     # Collision kills also drop supply point
                     supplies.append([float(e[0]), float(e[1]), "enemy_drop", 900])
-                    if not hit_this_frame:
+                    if not hit_this_frame and player_invuln <= 0:
                         if armor > 0:
                             armor -= 1          # Armor absorbs one hit
                         else:
                             lives -= 1
                             play_sfx('hurt')
                         hit_this_frame = True
+                        player_invuln = HIT_INVULN_FRAMES
+                        knockback_player(e[0] + enemy_size / 2.0,
+                                         e[1] + enemy_size / 2.0)
                         if lives <= 0:
                             play_sfx('death')
                             estimated_value = 0   # Clear estimated value
@@ -4371,18 +4852,22 @@ try:
                             searching_supply = None
                             search_timer = 0
                             mission_boss_kills = 0  # Task 3: zero on death
+                            tally_run(False)
 
             # ---- Boss vs player collision ----
             if boss is not None:
                 boss_rect = pygame.Rect(boss[0], boss[1], BOSS_SIZE, BOSS_SIZE)
                 if player_rect.colliderect(boss_rect):
-                    if not hit_this_frame:
+                    if not hit_this_frame and player_invuln <= 0:
                         if armor > 0:
                             armor -= 1
                         else:
                             lives -= 1
                             play_sfx('hurt')
                         hit_this_frame = True
+                        player_invuln = HIT_INVULN_FRAMES
+                        knockback_player(boss[0] + BOSS_SIZE / 2.0,
+                                         boss[1] + BOSS_SIZE / 2.0)
                         if lives <= 0:
                             play_sfx('death')
                             estimated_value = 0
@@ -4398,18 +4883,22 @@ try:
                             searching_supply = None
                             search_timer = 0
                             mission_boss_kills = 0  # Task 3: zero on death
+                            tally_run(False)
 
             # ---- Chaser vs player collision ----
             if chaser is not None:
                 chaser_rect2 = pygame.Rect(chaser[0], chaser[1], CHASER_SIZE, CHASER_SIZE)
                 if player_rect.colliderect(chaser_rect2):
-                    if not hit_this_frame:
+                    if not hit_this_frame and player_invuln <= 0:
                         if armor > 0:
                             armor -= 1
                         else:
                             lives -= 1
                             play_sfx('hurt')
                         hit_this_frame = True
+                        player_invuln = HIT_INVULN_FRAMES
+                        knockback_player(chaser[0] + CHASER_SIZE / 2.0,
+                                         chaser[1] + CHASER_SIZE / 2.0)
                         if lives <= 0:
                             play_sfx('death')
                             estimated_value = 0
@@ -4425,19 +4914,23 @@ try:
                             searching_supply = None
                             search_timer = 0
                             mission_boss_kills = 0  # Task 3: zero on death
+                            tally_run(False)
 
             # ---- Super Chaser vs player collision ----
             if super_chaser is not None:
                 sc_rect = pygame.Rect(super_chaser[0], super_chaser[1],
                                       SUPER_CHASER_SIZE, SUPER_CHASER_SIZE)
                 if player_rect.colliderect(sc_rect):
-                    if not hit_this_frame:
+                    if not hit_this_frame and player_invuln <= 0:
                         if armor > 0:
                             armor -= 1
                         else:
                             lives -= 1
                             play_sfx('hurt')
                         hit_this_frame = True
+                        player_invuln = HIT_INVULN_FRAMES
+                        knockback_player(super_chaser[0] + SUPER_CHASER_SIZE / 2.0,
+                                         super_chaser[1] + SUPER_CHASER_SIZE / 2.0)
                         if lives <= 0:
                             play_sfx('death')
                             estimated_value = 0
@@ -4453,19 +4946,21 @@ try:
                             searching_supply = None
                             search_timer = 0
                             mission_boss_kills = 0  # Task 3: zero on death
+                            tally_run(False)
 
             # ---- Enemy bullets vs player ----
             eb_hit = False
             for eb in enemy_bullets[:]:
                 if player_rect.collidepoint(eb[0], eb[1]):
                     enemy_bullets.remove(eb)
-                    if not eb_hit:
+                    if not eb_hit and player_invuln <= 0:
                         if armor > 0:
                             armor -= 1
                         else:
                             lives -= 1
                             play_sfx('hurt')
                         eb_hit = True
+                        player_invuln = HIT_INVULN_FRAMES
                         if lives <= 0:
                             play_sfx('death')
                             estimated_value = 0   # Clear estimated value
@@ -4482,6 +4977,7 @@ try:
                             searching_supply = None
                             search_timer = 0
                             mission_boss_kills = 0  # Task 3: zero on death
+                            tally_run(False)
 
             # ---- Player vs supplies (J to search nearest) ----
             pcx2 = player_x + player_size // 2
@@ -4742,6 +5238,20 @@ try:
         # Reload gauge (floats over the player, under the HUD)
         draw_reload_gauge()
 
+        # Time-of-day tint / night torch (under the HUD so HUD text stays crisp)
+        draw_time_of_day()
+
+        # Extraction cinematic (drawn over the tint so it reads at night too).
+        # The counter ticks HERE, not in the update block: do_extraction() sets
+        # it mid-update and a decrement in the same pass would eat a frame.
+        if extract_anim_timer > 0:
+            # Tick FIRST, then draw: drawing first means the final frame is seen
+            # with timer==1 (t=0.993, no finish) and the next frame is skipped
+            # entirely because the counter already hit 0 -- the shot never ends
+            # and the player is stuck in a finished run forever.
+            extract_anim_timer -= 1
+            draw_extract_lift()
+
         # HUD
         draw_hud()
 
@@ -4780,9 +5290,22 @@ try:
 
 except Exception as e:
     import traceback
-    err_log = os.path.join(GAME_SAVE_DIR, "error.log")
-    with open(err_log, "w") as f:
-        f.write(traceback.format_exc())
+    tb = traceback.format_exc()
+    # The save dir may not exist yet (fresh install / isolated HOME in tests);
+    # create it first so a crash inside the crash handler cannot mask the error.
+    try:
+        os.makedirs(GAME_SAVE_DIR, exist_ok=True)
+        err_log = os.path.join(GAME_SAVE_DIR, "error.log")
+        with open(err_log, "w") as f:
+            f.write(tb)
+    except Exception:
+        pass
+    # Headless/test runs have no window to look at, so also echo to stderr.
+    try:
+        sys.stderr.write(tb)
+        sys.stderr.flush()
+    except Exception:
+        pass
     # Try to show error in game window
     try:
         screen.fill((0, 0, 0))
