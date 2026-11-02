@@ -2658,7 +2658,9 @@ def show_settings():
     cy = 48
     title = font_huge.render("设置", True, MENU_ACCENT)
     screen.blit(title, (WIDTH // 2 - title.get_width() // 2, cy))
-    cy += title.get_height() + 24
+    cy += title.get_height() + 8
+    pygame.draw.line(screen, MENU_RULE, (WIDTH // 2 - 190, cy), (WIDTH // 2 + 190, cy), 2)
+    cy += 16
 
     # SFX toggle
     toggle_text = "开" if sfx_enabled else "关"
@@ -2694,13 +2696,11 @@ def show_settings():
     cy += section.get_height() + 2     # font_normal(32) is ~44px tall, not 28
     controls = [
         ("WASD / 方向键", "移动角色"),
-        ("J", "搜索物资"),
         ("空格", "射击"),
-        ("R", "换弹（弹匣打空会自动换弹）"),
+        ("J", "搜索物资"),
         ("1-5 / Tab / 滚轮", "切换武器"),
-        ("ESC", "暂停游戏"),
-        ("5", "存档"),
-        ("9", "读档"),
+        ("R", "换弹（弹匣打空会自动换弹）"),
+        ("P / ESC", "暂停游戏"),
         ("Q", "退出游戏"),
     ]
     for key_t, desc in controls:
@@ -2727,7 +2727,9 @@ def show_tutorial():
     cy = 40
     title = font_huge.render("操作指南", True, MENU_ACCENT)
     screen.blit(title, (WIDTH // 2 - title.get_width() // 2, cy))
-    cy += title.get_height() + 24
+    cy += title.get_height() + 8
+    pygame.draw.line(screen, MENU_RULE, (WIDTH // 2 - 190, cy), (WIDTH // 2 + 190, cy), 2)
+    cy += 16
 
     instructions = [
         ("目标：", "搜索物资并从战区撤离"),
@@ -2826,7 +2828,9 @@ def show_stats():
     cy = panel_y + 24
     title = font_big.render("生涯战绩", True, EXTRACT_COLOR)
     screen.blit(title, (WIDTH // 2 - title.get_width() // 2, cy))
-    cy += title.get_height() + 22
+    cy += title.get_height() + 6
+    pygame.draw.line(screen, MENU_RULE, (WIDTH // 2 - 200, cy), (WIDTH // 2 + 200, cy), 2)
+    cy += 16
 
     if total_runs == 0:
         hint = font_small.render("还没有出动记录 —— 按 Enter 开始第一战", True, GRAY)
