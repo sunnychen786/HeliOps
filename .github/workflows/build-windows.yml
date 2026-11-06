@@ -25,6 +25,14 @@ jobs:
           pip install pygame pyinstaller
           pip list
 
+      - name: Verify CJK font resolution
+        # The v1.3.2 exe shipped with every Chinese label as a tofu box:
+        # the font picker accepted pygame's default font, which has no CJK
+        # glyphs. Run the font test on the Windows runner BEFORE building --
+        # if the runner cannot resolve a Chinese font, the build fails here
+        # instead of shipping a broken UI to players.
+        run: python tools/test_font_cjk.py
+
       - name: Build Windows exe
         run: python build.py
 
