@@ -21,7 +21,7 @@ import shutil
 # ==============================
 pygame.init()
 
-GAME_VERSION = "1.3.2"
+GAME_VERSION = "1.3.3"
 
 WIDTH, HEIGHT = 1200,800
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -83,38 +83,126 @@ GUN_SHOP_PRICES = {k: v["cost"] for k, v in GUN_TYPES.items() if v["cost"] > 0}
 # ==============================
 # Font (CJK support, priority: filename -> font name -> default)
 # ==============================
+# Candidate font FILES. Windows paths matter: the previous list only had
+# macOS paths, so on Windows every file lookup failed and the game fell
+# through to the name list -- where "PingFang SC" does not exist, pygame
+# silently returns the DEFAULT font, and the old check
+# (render("Test").get_width() > 20) happily accepted it. The default font has
+# no CJK glyphs, so the whole UI came out as boxes.
+FONT_FILE_CANDIDATES = [
+    # macOS
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/System/Library/Fonts/STHeiti Light.ttc",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/Library/Fonts/Arial Unicode.ttf",
+    # Windows
+    "C:/Windows/Fonts/msyh.ttc",       # 微软雅黑
+    "C:/Windows/Fonts/msyhbd.ttc",     # 微软雅黑 Bold
+    "C:/Windows/Fonts/simhei.ttf",      # 黑体
+    "C:/Windows/Fonts/simsun.ttc",     # 宋体
+    "C:/Windows/Fonts/msjh.ttc",       # 微軟正黑體
+    "C:/Windows/Fonts/Deng.ttf",        # 等线
+    "C:/Windows/Fonts/DengXian.ttf",
+    # Linux
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+]
+
+FONT_NAME_CANDIDATES = [
+    "Microsoft YaHei", "微软雅黑", "SimHei", "黑体", "SimSun", "宋体",
+    "Microsoft JhengHei", "微軟正黑體", "DengXian", "等线",
+    "PingFang SC", "Heiti SC", "STHeiti", "Hiragino Sans GB",
+    "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Micro Hei",
+]
+
+# Sweep patterns for the Windows font folder (see _get_font).
+FONT_GLOB_DIR = "C:/Windows/Fonts"
+FONT_GLOB_PATTERNS = ["msyh*.ttc", "msyh*.ttf", "msjh*.ttc", "simhei.ttf",
+                       "simsun.ttc", "Deng*.ttf"]
+
+# Characters the UI actually uses. A font only counts as usable if it draws
+# these, not just a single 中.
+_CJK_PROBE = "中文撤离武器弹难度战绩获胜"
+
+
+def _font_has_cjk(f):
+    """True only if the font draws real CJK glyphs instead of .notdef boxes.
+
+    Comparing against a private-use codepoint is the reliable test: a font
+    without the glyph renders both characters as the same box, a font with it
+    renders something different. `font.metrics()` cannot be used here -- it
+    happily reports a box for a missing character.
+    """
+    try:
+        box = pygame.image.tostring(f.render("\ue123", True, (255, 255, 255)), "RGBA")
+        for ch in _CJK_PROBE:
+            if pygame.image.tostring(f.render(ch, True, (255, 255, 255)), "RGBA") == box:
+                return False
+        return True
+    except Exception:
+        return False
+
+
 def _get_font(size):
-    """Get a CJK-compatible font, compatible with Thonny sandbox environment"""
-    file_candidates = [
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/System/Library/Fonts/STHeiti Medium.ttc",
-        "/System/Library/Fonts/STHeiti Light.ttc",
-        "/System/Library/Fonts/Hiragino Sans GB.ttc",
-        "/Library/Fonts/Arial Unicode.ttf",
-    ]
-    for path in file_candidates:
+    """Get a CJK-capable font, on Windows / macOS / Linux.
+
+    Every candidate is verified by actually rendering Chinese; a font that
+    cannot draw it is rejected no matter how plausible its name looks.
+    """
+    for path in FONT_FILE_CANDIDATES:
+        if not os.path.exists(path):
+            continue
         try:
             f = pygame.font.Font(path, size)
+        except Exception:
+            continue
+        if _font_has_cjk(f):
             return f
-        except:
-            pass
-    name_candidates = [
-        "PingFang SC", "Heiti SC", "STHeiti", "Hiragino Sans GB",
-        "Microsoft YaHei", "SimHei",
-        "Noto Sans CJK SC", "WenQuanYi Micro Hei",
-    ]
-    for name in name_candidates:
-        f = pygame.font.SysFont(name, size)
-        test = f.render("Test", True, (255, 255, 255))
-        if test.get_width() > 20:
+
+    # Last-ditch sweep of the Windows font folder: the exact file names differ
+    # between Windows versions (msyh.ttc vs msyhl.ttc, Deng.ttf vs DengXian.ttf).
+    try:
+        import glob as _glob
+        for pattern in FONT_GLOB_PATTERNS:
+            for path in _glob.glob(os.path.join(FONT_GLOB_DIR, pattern)):
+                try:
+                    f = pygame.font.Font(path, size)
+                except Exception:
+                    continue
+                if _font_has_cjk(f):
+                    return f
+    except Exception:
+        pass
+
+    for name in FONT_NAME_CANDIDATES:
+        try:
+            f = pygame.font.SysFont(name, size)
+        except Exception:
+            continue
+        # SysFont never fails: an unknown name quietly yields the default
+        # font, so the glyph check is what actually decides.
+        if _font_has_cjk(f):
             return f
+
+    # Nothing here can draw Chinese. The game still runs (Latin text is fine)
+    # but every label is a box -- so say so, loudly, on stderr and on screen.
+    print("[font] WARNING: no CJK-capable font found. "
+          "Chinese text will render as boxes. Install Microsoft YaHei "
+          "(Windows) / Noto Sans CJK (Linux) and restart.")
     return pygame.font.SysFont(None, size)
+
 
 font_small  = _get_font(24)
 font_normal = _get_font(32)
 font_big    = _get_font(56)
 font_huge   = _get_font(80)
+
+# True when the UI text can actually be read. The main menu shows a warning
+# banner when it is False, so the failure is visible instead of silent.
+FONT_OK = _font_has_cjk(font_normal)
 
 # ==============================
 # Sound system (procedural generation, no external files)
@@ -2890,6 +2978,17 @@ def show_main_menu():
     rule_y = cy + sub_surf.get_height() + 12
     pygame.draw.line(screen, MENU_RULE, (WIDTH // 2 - 230, rule_y), (WIDTH // 2 + 230, rule_y), 2)
     cy = rule_y + 26
+
+    # If the machine has no CJK font at all, every label above and below is a
+    # box. Say so in English (English renders fine) instead of leaving the
+    # player staring at tofu.
+    if not FONT_OK:
+        warn = font_small.render(
+            "No CJK font found - Chinese text shows as boxes. "
+            "Install Microsoft YaHei / Noto Sans CJK and restart.",
+            True, (255, 120, 90))
+        screen.blit(warn, (WIDTH // 2 - warn.get_width() // 2, cy))
+        cy += warn.get_height() + 14
 
     # ---- Last result (extraction success indicator) ----
     if last_result is not None and last_result["reason"] == "extract_success":
