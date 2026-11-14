@@ -28,7 +28,7 @@ except Exception:          # pragma: no cover - only if the module is missing
 # ==============================
 pygame.init()
 
-GAME_VERSION = "1.4.1"
+GAME_VERSION = "1.4.2"
 
 WIDTH, HEIGHT = 1200,800
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -327,6 +327,33 @@ def _ascii_copy_of(path):
         return None
 
 
+def _ui_font(size=20):
+    """A font for the always-visible English status line / error panel.
+
+    Never rely on pygame's DEFAULT font here. pygame loads
+    `freesansbold.ttf` from its own bundled data files, which in a packaged
+    build land in a temp folder whose path may contain non-ASCII characters
+    -- and then the default font is unreadable and every character renders as
+    a filled box. The status line would show up as a solid green bar instead
+    of text (which is exactly what we saw on a player's machine).
+
+    Use the game's own font when it works; otherwise the embedded copy loaded
+    from an ASCII path; pygame's default only as a last resort.
+    """
+    if FONT_OK:
+        return font_small
+    try:
+        path = _font_from_embedded_bytes()
+        if path:
+            return pygame.font.Font(path, size)
+    except Exception:
+        pass
+    try:
+        return pygame.font.SysFont(None, size)
+    except Exception:
+        return None
+
+
 def _font_status():
     """One-line, always-readable (English) description of the font situation."""
     if not FONT_OK:
@@ -447,6 +474,23 @@ font_huge   = _get_font(80)
 FONT_OK = _font_has_cjk(font_normal)
 print("[font] using: %s (bundled=%s)" % (FONT_SOURCE, bool(_bundled_font_path())))
 
+def _default_font_usable():
+    """Can pygame's DEFAULT font render Latin here?
+
+    pygame loads freesansbold.ttf from its own bundled data files; in a
+    packaged build those land in a temp folder whose path may contain
+    non-ASCII characters, and then every character comes out as a filled
+    box. Worth knowing, because it is invisible everywhere else.
+    """
+    try:
+        f = pygame.font.SysFont(None, 20)
+        box = pygame.image.tostring(f.render("\ue123", True, (255, 255, 255)), "RGBA")
+        txt = pygame.image.tostring(f.render("A", True, (255, 255, 255)), "RGBA")
+        return txt != box
+    except Exception:
+        return False
+
+
 # Leave a trace on disk: if a player reports "the text is all boxes", this
 # file says which font the build actually loaded and where it came from.
 try:
@@ -456,6 +500,7 @@ try:
         _fh.write("version: %s\n" % GAME_VERSION)
         _fh.write("font source: %s\n" % FONT_SOURCE)
         _fh.write("cjk ok: %s\n" % FONT_OK)
+        _fh.write("pygame default font usable: %s\n" % _default_font_usable())
         _fh.write("bundled font path: %s\n" % (_bundled_font_path() or "(not found)"))
         _fh.write("bundled path is ascii: %s\n" % _is_ascii_path(_bundled_font_path() or ""))
         _fh.write("python: %s\n" % sys.version.split()[0])
@@ -3431,11 +3476,14 @@ def show_main_menu():
         screen.blit(msg_surf, (WIDTH // 2 - msg_surf.get_width() // 2, HEIGHT - 74))
 
     # ---- Font status line ----
-    # Drawn with the DEFAULT font in English on purpose: if the CJK font
-    # failed to load, a Chinese label here would be a box too, and the one
-    # thing the player needs to read is exactly this line.
+    # Drawn in English on purpose: if the CJK font failed to load, a Chinese
+    # label here would be a box too, and the one thing the player needs to
+    # read is exactly this line. The font is the game's own (or the embedded
+    # copy) -- never pygame's default, which may itself be unreadable.
     status = _font_status()
-    st_font = pygame.font.SysFont(None, 20)
+    st_font = _ui_font(20)
+    if st_font is None:
+        st_font = font_small
     st_surf = st_font.render(status, True, (110, 230, 150) if FONT_OK else (255, 90, 80))
     screen.blit(st_surf, (16, HEIGHT - 26))
 
