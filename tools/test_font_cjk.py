@@ -41,7 +41,7 @@ def load_font_section():
     start = src.index("# Font (CJK support")
     end = src.index("FONT_OK = _font_has_cjk(font_normal)")
     end = src.index("\n", end) + 1
-    ns = {"pygame": pygame, "os": os}
+    ns = {"pygame": pygame, "os": os, "sys": sys, "__file__": SRC}
     exec(src[start:end], ns)
     return ns
 
@@ -49,6 +49,7 @@ def load_font_section():
 NS = load_font_section()
 has_cjk = NS["_font_has_cjk"]
 get_font = NS["_get_font"]
+bundled_path = NS["_bundled_font_path"]()
 
 # A real CJK font on this machine, whatever it is called. The list covers
 # macOS, Windows and Linux so the same test runs on the CI runner.
@@ -89,6 +90,30 @@ def check(label, ok, detail=""):
 print("CJK font regression test")
 print("-" * 60)
 
+# 0. the font we SHIP must exist, load, and cover every character in game.py
+check("the bundled font file exists",
+      bool(bundled_path) and os.path.exists(bundled_path or ""),
+      bundled_path or "NOT FOUND")
+if bundled_path and os.path.exists(bundled_path):
+    bf = pygame.font.Font(bundled_path, 28)
+    check("the bundled font can draw Chinese", has_cjk(bf) is True,
+          os.path.basename(bundled_path))
+
+    with open(SRC, encoding="utf-8") as fh:
+        game_src = fh.read()
+    used = sorted(set(c for c in game_src if ord(c) > 0x7f))
+    box = pygame.image.tostring(bf.render("\ue123", True, (255, 255, 255)), "RGBA")
+    missing = [c for c in used
+               if pygame.image.tostring(bf.render(c, True, (255, 255, 255)), "RGBA") == box]
+    check("the bundled font covers every character the game prints",
+          not missing,
+          ("MISSING: %s" % "".join(missing)) if missing
+          else "%d 个非 ASCII 字符全覆盖" % len(used))
+else:
+    check("the bundled font can draw Chinese", False, "font file missing")
+    check("the bundled font covers every character the game prints", False,
+          "font file missing")
+
 # 1. the checker must reject a font with no CJK glyphs
 default_font = pygame.font.SysFont(None, 28)
 check("checker rejects a non-CJK font",
@@ -126,18 +151,21 @@ code_only = "\n".join(l for l in text.splitlines() if not l.strip().startswith("
 check("the broken 'Test' width check is gone",
       'render("Test"' not in code_only and "get_width() > 20" not in code_only)
 
-# 6. a simulated machine with no CJK font at all must be detected
+# 6. a machine with NO CJK font at all -- not even the bundled one -- must be
+#    detected instead of silently shipping boxes
 saved_files = list(NS["FONT_FILE_CANDIDATES"])
 saved_names = list(NS["FONT_NAME_CANDIDATES"])
 saved_patterns = list(NS["FONT_GLOB_PATTERNS"])
 saved_globdir = NS["FONT_GLOB_DIR"]
+saved_bundled = NS["BUNDLED_FONT"]
 try:
+    NS["BUNDLED_FONT"] = "assets/__no_such_bundled_font__.ttf"
     NS["FONT_FILE_CANDIDATES"] = ["/definitely/not/here.ttf"]
     NS["FONT_NAME_CANDIDATES"] = ["NoSuchFontFamilyXyz"]
     NS["FONT_GLOB_PATTERNS"] = ["no_such_font_*.ttf"]
     NS["FONT_GLOB_DIR"] = "/definitely/not/here"
     fallback = get_font(32)
-    check("a machine without CJK fonts is detected (not silently boxed)",
+    check("a machine without any CJK font is detected (not silently boxed)",
           has_cjk(fallback) is False,
           "falls back to the default font and FONT_OK stays False")
 finally:
@@ -145,11 +173,20 @@ finally:
     NS["FONT_NAME_CANDIDATES"] = saved_names
     NS["FONT_GLOB_PATTERNS"] = saved_patterns
     NS["FONT_GLOB_DIR"] = saved_globdir
+    NS["BUNDLED_FONT"] = saved_bundled
 
-# 7. the Windows file branch must actually work when the file is there
+# 7. the bundled font must win over the system fonts -- that is the whole
+#    point of shipping it
+NS["FONT_SOURCE"] = "unknown"
+_ = get_font(32)
+check("the bundled font is preferred over system fonts",
+      NS["FONT_SOURCE"] == "bundled", NS["FONT_SOURCE"])
+
+# 8. the Windows file branch must still work when the file is there
 if real_cjk:
     path, _ = real_cjk
     try:
+        NS["BUNDLED_FONT"] = "assets/__no_such_bundled_font__.ttf"
         NS["FONT_FILE_CANDIDATES"] = [path]
         NS["FONT_NAME_CANDIDATES"] = ["NoSuchFontFamilyXyz"]
         NS["FONT_GLOB_PATTERNS"] = ["no_such_font_*.ttf"]
@@ -158,12 +195,13 @@ if real_cjk:
         check("a CJK font FILE is used even when no font name matches",
               has_cjk(via_file) is True, os.path.basename(path))
     finally:
+        NS["BUNDLED_FONT"] = saved_bundled
         NS["FONT_FILE_CANDIDATES"] = saved_files
         NS["FONT_NAME_CANDIDATES"] = saved_names
         NS["FONT_GLOB_PATTERNS"] = saved_patterns
         NS["FONT_GLOB_DIR"] = saved_globdir
 
-# 8. the game's own Chinese UI strings must not render as boxes
+# 9. the game's own Chinese UI strings must not render as boxes
 if real_cjk:
     _, f = real_cjk
     strings = ["生涯战绩", "榴弹炮", "撤离成功", "补给站", "被击倒", "直升机撤离射击"]
