@@ -12,14 +12,25 @@
 
 | 平台 | 版本 | 下载 |
 | --- | --- | --- |
-| Windows | 10 / 11 64 位 | [HeliOps_Windows_Chinese_v1.3.3.zip](https://github.com/sunnychen786/HeliOps/releases/download/v1.3.3/HeliOps_Windows_Chinese_v1.3.3.zip) |
-| macOS | 12+（Intel / Apple 芯片） | [HeliOps_Mac_Chinese_v1.3.3.zip](https://github.com/sunnychen786/HeliOps/releases/download/v1.3.3/HeliOps_Mac_Chinese_v1.3.3.zip) |
+| Windows | 10 / 11 64 位 | [HeliOps_Windows_Chinese_v1.4.0.zip](https://github.com/sunnychen786/HeliOps/releases/download/v1.4.0/HeliOps_Windows_Chinese_v1.4.0.zip) |
+| macOS | 12+（Intel / Apple 芯片） | [HeliOps_Mac_Chinese_v1.4.0.zip](https://github.com/sunnychen786/HeliOps/releases/download/v1.4.0/HeliOps_Mac_Chinese_v1.4.0.zip) |
 
 解压即玩：Windows 双击 `HeliOps.exe`，macOS 双击 `HeliOps.app`（首次需要在「系统设置 → 隐私与安全性」里放行）。
 
 全部历史版本见 [Releases](https://github.com/sunnychen786/HeliOps/releases)。也收录在 [itch.io](https://sunnychen786.itch.io/heliops)。
 
 ![Boss 追杀](screenshots/v1.3.3_Boss追杀.png)
+
+---
+
+## v1.4 带来了什么
+
+**自带中文字体** —— 游戏里塞了一份 100 KB 的中文字体（Noto Sans SC 子集，SIL OFL 许可），
+每台机器渲染完全一致。之前的版本依赖系统字体，碰上没装中文字体的 Windows 就会
+整屏方框；现在这个坑从根上没了。
+
+**排障用的字体日志** —— 启动后 `~/Documents/HeliOps/font.log` 会写明这次用的是哪份
+字体、路径在哪、中文是否可用。报问题时把这个文件发出来就行。
 
 ---
 
@@ -114,5 +125,8 @@ python tools/test_font_cjk.py         # 字体能否渲染中文（Windows 出�
 ## 许可
 
 源码开放用于学习与二次创作。游戏本体免费、无内购。
+
+`assets/HeliOps_CJK.ttf` 是 Noto Sans SC 的子集（仅保留游戏用到的 443 个字符），
+遵循 SIL Open Font License 1.1，完整许可文本见 `assets/OFL.txt`。
 
 问题反馈：<https://sunnychen786.itch.io/heliops>
