@@ -21,7 +21,7 @@ import shutil
 # ==============================
 pygame.init()
 
-GAME_VERSION = "1.3.3"
+GAME_VERSION = "1.4.0"
 
 WIDTH, HEIGHT = 1200,800
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -81,8 +81,21 @@ GUN_SHOP_PRICES = {k: v["cost"] for k, v in GUN_TYPES.items() if v["cost"] > 0}
 
 
 # ==============================
-# Font (CJK support, priority: filename -> font name -> default)
+# Font (CJK support, priority: bundled font -> system files -> system names)
 # ==============================
+# v1.4: the game now SHIPS its own CJK font (assets/HeliOps_CJK.ttf, a 100 KB
+# subset of Noto Sans SC under the SIL OFL). Relying on whatever font the
+# player's machine happens to have is what produced the "everything is a tofu
+# box" bug: on Windows no file candidate existed, and pygame's SysFont()
+# silently returns the default font for names it does not know -- a font with
+# no Chinese glyphs at all. Shipping the font removes the whole class of
+# problem: every machine renders the same glyphs, and there is nothing to
+# install.
+#
+# The system candidates stay as a fallback (e.g. if the asset is missing from
+# a hand-built package), but the bundled font wins when it is present.
+BUNDLED_FONT = "assets/HeliOps_CJK.ttf"
+
 # Candidate font FILES. Windows paths matter: the previous list only had
 # macOS paths, so on Windows every file lookup failed and the game fell
 # through to the name list -- where "PingFang SC" does not exist, pygame
@@ -127,6 +140,9 @@ FONT_GLOB_PATTERNS = ["msyh*.ttc", "msyh*.ttf", "msjh*.ttc", "simhei.ttf",
 # these, not just a single 中.
 _CJK_PROBE = "中文撤离武器弹难度战绩获胜"
 
+# Which font the game ended up using -- "bundled" is what we ship with.
+FONT_SOURCE = "unknown"
+
 
 def _font_has_cjk(f):
     """True only if the font draws real CJK glyphs instead of .notdef boxes.
@@ -146,12 +162,48 @@ def _font_has_cjk(f):
         return False
 
 
+def _bundled_font_path():
+    """Where the shipped CJK font lives -- source tree or PyInstaller bundle.
+
+    In a frozen app the data files are unpacked next to the executable:
+    `sys._MEIPASS` is that directory (a temp folder for onefile builds, the
+    bundle's Resources/Frameworks folder for a .app).
+    """
+    bases = []
+    if getattr(sys, "frozen", False):
+        bases.append(getattr(sys, "_MEIPASS", ""))
+        bases.append(os.path.dirname(sys.executable))
+    bases.append(os.path.dirname(os.path.abspath(__file__)))
+    for base in bases:
+        if not base:
+            continue
+        for rel in (BUNDLED_FONT, os.path.basename(BUNDLED_FONT)):
+            path = os.path.join(base, rel)
+            if os.path.exists(path):
+                return path
+    return None
+
+
 def _get_font(size):
     """Get a CJK-capable font, on Windows / macOS / Linux.
 
-    Every candidate is verified by actually rendering Chinese; a font that
-    cannot draw it is rejected no matter how plausible its name looks.
+    Order: the bundled font (always identical everywhere) -> system files ->
+    system names. Every candidate is verified by actually rendering Chinese; a
+    font that cannot draw it is rejected no matter how plausible its name
+    looks.
     """
+    global FONT_SOURCE
+    bundled = _bundled_font_path()
+    if bundled:
+        try:
+            f = pygame.font.Font(bundled, size)
+            if _font_has_cjk(f):
+                FONT_SOURCE = "bundled"
+                return f
+            print("[font] WARNING: bundled font %s cannot draw Chinese" % bundled)
+        except Exception as e:
+            print("[font] WARNING: cannot load bundled font %s (%s)" % (bundled, e))
+
     for path in FONT_FILE_CANDIDATES:
         if not os.path.exists(path):
             continue
@@ -160,6 +212,7 @@ def _get_font(size):
         except Exception:
             continue
         if _font_has_cjk(f):
+            FONT_SOURCE = "system:" + os.path.basename(path)
             return f
 
     # Last-ditch sweep of the Windows font folder: the exact file names differ
@@ -173,6 +226,7 @@ def _get_font(size):
                 except Exception:
                     continue
                 if _font_has_cjk(f):
+                    FONT_SOURCE = "system:" + os.path.basename(path)
                     return f
     except Exception:
         pass
@@ -185,13 +239,16 @@ def _get_font(size):
         # SysFont never fails: an unknown name quietly yields the default
         # font, so the glyph check is what actually decides.
         if _font_has_cjk(f):
+            FONT_SOURCE = "system-name:" + name
             return f
 
     # Nothing here can draw Chinese. The game still runs (Latin text is fine)
     # but every label is a box -- so say so, loudly, on stderr and on screen.
     print("[font] WARNING: no CJK-capable font found. "
-          "Chinese text will render as boxes. Install Microsoft YaHei "
-          "(Windows) / Noto Sans CJK (Linux) and restart.")
+          "Chinese text will render as boxes. The bundled font "
+          "(assets/HeliOps_CJK.ttf) should have shipped with the game -- "
+          "reinstall it, or install Microsoft YaHei / Noto Sans CJK.")
+    FONT_SOURCE = "none"
     return pygame.font.SysFont(None, size)
 
 
@@ -203,6 +260,20 @@ font_huge   = _get_font(80)
 # True when the UI text can actually be read. The main menu shows a warning
 # banner when it is False, so the failure is visible instead of silent.
 FONT_OK = _font_has_cjk(font_normal)
+print("[font] using: %s (bundled=%s)" % (FONT_SOURCE, bool(_bundled_font_path())))
+
+# Leave a trace on disk: if a player reports "the text is all boxes", this
+# file says which font the build actually loaded and where it came from.
+try:
+    _font_log = os.path.join(os.path.expanduser("~"), "Documents", "HeliOps", "font.log")
+    os.makedirs(os.path.dirname(_font_log), exist_ok=True)
+    with open(_font_log, "w", encoding="utf-8") as _fh:
+        _fh.write("version: %s\n" % GAME_VERSION)
+        _fh.write("font source: %s\n" % FONT_SOURCE)
+        _fh.write("bundled font path: %s\n" % (_bundled_font_path() or "(not found)"))
+        _fh.write("cjk ok: %s\n" % FONT_OK)
+except Exception:
+    pass
 
 # ==============================
 # Sound system (procedural generation, no external files)
@@ -2147,7 +2218,7 @@ def draw_reload_gauge():
 # Time of day (v1.3)
 # ==============================
 TIME_OF_DAY_NAMES = {"day": "白昼", "dusk": "黄昏", "night": "夜晚"}
-TIME_OF_DAY_ICON = {"day": "☀", "dusk": "☁", "night": "☾"}
+TIME_OF_DAY_ICON = {"day": "☀", "dusk": "☁", "night": "★"}
 TIME_OF_DAY_HUD_COLOR = {"day": (255, 232, 150), "dusk": (255, 172, 92),
                          "night": (152, 184, 255)}
 
@@ -3156,10 +3227,10 @@ def show_main_menu():
 
     # ---- Main menu message bar (search_message shown here) ----
     if search_message_timer > 0:
-        msg_color = (255, 80, 80) if search_message.startswith("✕") else (100, 220, 255)
+        msg_color = (255, 80, 80) if search_message.startswith("×") else (100, 220, 255)
         msg_surf = font_small.render(search_message, True, msg_color)
         msg_bg = pygame.Surface((msg_surf.get_width() + 24, msg_surf.get_height() + 12), pygame.SRCALPHA)
-        msg_bg.fill((20, 10, 10, 220) if search_message.startswith("✕") else (10, 20, 40, 200))
+        msg_bg.fill((20, 10, 10, 220) if search_message.startswith("×") else (10, 20, 40, 200))
         msg_bg.set_alpha(min(255, search_message_timer * 3))
         msg_surf.set_alpha(min(255, search_message_timer * 3))
         screen.blit(msg_bg, (WIDTH // 2 - msg_bg.get_width() // 2, HEIGHT - 80))
@@ -4035,13 +4106,13 @@ try:
                         else:
                             # Check selected mode is unlocked before new game
                             if hard_mode_active and not hard_mode_unlocked:
-                                search_message = "✕ 困难模式未解锁！击杀Boss获取信物。"
+                                search_message = "× 困难模式未解锁！击杀Boss获取信物。"
                                 search_message_timer = 150
                             elif extreme_mode_active and not extreme_mode_unlocked:
-                                search_message = "✕ 极难模式未解锁！完成P键任务栏目标后解锁。"
+                                search_message = "× 极难模式未解锁！完成P键任务栏目标后解锁。"
                                 search_message_timer = 150
                             elif extreme_mode_active and extreme_plays_remaining <= 0:
-                                search_message = f"✕ Extreme mode: {extreme_plays_remaining} plays left! Complete adv tasks for +15."
+                                search_message = f"× Extreme mode: {extreme_plays_remaining} plays left! Complete adv tasks for +15."
                                 search_message_timer = 150
                             else:
                                 reset_game(reset_score=False)  # New game restore full save (incl. score)
