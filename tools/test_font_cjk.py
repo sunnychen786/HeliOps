@@ -229,6 +229,35 @@ if real_cjk:
         NS["FONT_GLOB_PATTERNS"] = saved_patterns
         NS["FONT_GLOB_DIR"] = saved_globdir
 
+# 8b. a font living under a NON-ASCII path (Chinese Windows user name) must
+#     still load -- FreeType opens font files with a narrow-character API, so
+#     such a path fails on Windows and the game has to copy the file
+#     somewhere ASCII-safe first.
+import shutil
+import tempfile
+
+nonascii_dir = os.path.join(tempfile.gettempdir(), "\u4e2d\u6587\u76ee\u5f55", "assets")
+try:
+    os.makedirs(nonascii_dir, exist_ok=True)
+    shutil.copy2(bundled_path, os.path.join(nonascii_dir, "HeliOps_CJK.ttf"))
+    saved_b2 = NS["BUNDLED_FONT"]
+    saved_log = list(NS.get("_FONT_LOG_LINES", []))
+    saved_lookup = NS["_bundled_font_path"]
+    try:
+        NS["_bundled_font_path"] = lambda: os.path.join(nonascii_dir, "HeliOps_CJK.ttf")
+        NS["_FONT_LOG_LINES"] = []
+        f_non = get_font(32)
+        check("a font under a non-ASCII path still loads",
+              has_cjk(f_non) is True,
+              "copied to an ASCII path" if any("ASCII path" in x for x in NS["_FONT_LOG_LINES"])
+              else "loaded in place")
+    finally:
+        NS["BUNDLED_FONT"] = saved_b2
+        NS["_FONT_LOG_LINES"] = saved_log
+        NS["_bundled_font_path"] = saved_lookup
+except Exception as e:
+    check("a font under a non-ASCII path still loads", False, str(e))
+
 # 9. the game's own Chinese UI strings must not render as boxes
 if real_cjk:
     _, f = real_cjk
