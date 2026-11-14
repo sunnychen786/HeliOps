@@ -206,19 +206,47 @@ def _is_ascii_path(path):
         return False
 
 
+def _short_path(path):
+    """Windows 8.3 short path (C:\\Users\\ABC~1\\...) -- pure ASCII.
+
+    FreeType opens font files with a narrow-character API, so a path with a
+    Chinese user name or folder simply fails. The short name is the same file
+    under an ASCII name, so it is worth trying before copying anything.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        buf = ctypes.create_unicode_buffer(1024)
+        n = kernel32.GetShortPathNameW(ctypes.c_wchar_p(path), buf, 1024)
+        if 0 < n < 1024:
+            short = buf.value
+            if short != path and _is_ascii_path(short):
+                return short
+    except Exception:
+        pass
+    return None
+
+
 def _ascii_write_dir():
     """A writable directory whose path is pure ASCII, or None.
 
     Candidates, in order:
+      * the folder the game runs from (often D:\\Games\\HeliOps -- ASCII)
       * %PUBLIC%\\HeliOps  (C:\\Users\\Public -- writable by anyone)
       * C:\\Windows\\Temp\\HeliOps
+      * C:\\ProgramData\\HeliOps
       * the temp dir (may contain a non-ASCII user name -- last resort)
     """
     candidates = []
+    if getattr(sys, "frozen", False):
+        candidates.append(os.path.join(os.path.dirname(sys.executable), "HeliOps"))
     public = os.environ.get("PUBLIC")
     if public:
         candidates.append(os.path.join(public, "HeliOps"))
     candidates.append(r"C:\Windows\Temp\HeliOps")
+    candidates.append(r"C:\ProgramData\HeliOps")
     try:
         import tempfile
         candidates.append(os.path.join(tempfile.gettempdir(), "HeliOps"))
@@ -326,10 +354,16 @@ def _get_font(size):
             path = bundled
             if not _is_ascii_path(path):
                 # FreeType cannot open a font whose path contains non-ASCII
-                # characters -- copy it somewhere ASCII-safe first.
-                copy = _ascii_copy_of(path)
-                if copy:
-                    path = copy
+                # characters. Try the Windows 8.3 short name first (same file,
+                # ASCII name), then copy the file somewhere ASCII-safe.
+                short = _short_path(path)
+                if short:
+                    _FONT_LOG_LINES.append("using short path %s" % short)
+                    path = short
+                else:
+                    copy = _ascii_copy_of(path)
+                    if copy:
+                        path = copy
             f = pygame.font.Font(path, size)
             if _font_has_cjk(f):
                 FONT_SOURCE = "bundled"
