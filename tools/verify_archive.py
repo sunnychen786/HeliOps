@@ -107,23 +107,23 @@ for s in MUST_NOT_HAVE:
 # ---- the CJK font must actually travel with the build ----
 # Without assets/HeliOps_CJK.ttf the game falls back to whatever font the
 # player's machine has, and on Windows that is a font with no Chinese glyphs
-# -> every label renders as a tofu box. The exe (onefile) carries it inside
-# the archive; a macOS .app carries it as a separate file in the bundle.
-entries = [e[0] for e in arch.toc]
-in_archive = any(name.endswith("HeliOps_CJK.ttf") for name in entries)
+# -> every label renders as a tofu box.
+#
+# NB: `arch.toc` is a dict -- iterating it yields the KEYS, so `[e[0] for e in
+# toc]` silently gives the first character of every name. Use the keys.
+entries = list(arch.toc.keys())
+in_archive = any(n.replace("\\", "/").endswith("HeliOps_CJK.ttf") for n in entries)
 
 in_bundle = False
-# A macOS .app keeps the payload in Contents/Frameworks and the data files
-# in Contents/Resources -- both are two levels above the executable, so walk
-# up from the binary instead of looking next to it.
-exe_dir = os.path.dirname(os.path.abspath(EXE))
-for base in [exe_dir] + [os.path.dirname(exe_dir)] * 4:
-    for root, _dirs, files in os.walk(base):
+exe_path = os.path.abspath(EXE)
+if os.sep + "Contents" + os.sep + "MacOS" + os.sep in exe_path:
+    # a macOS .app: the payload lives in Contents/Frameworks and the data
+    # files in Contents/Resources -- both above the executable
+    app_root = exe_path.split(os.sep + "Contents" + os.sep)[0]
+    for root, _dirs, files in os.walk(app_root):
         if "HeliOps_CJK.ttf" in files:
             in_bundle = True
             break
-    if in_bundle:
-        break
 
 font_ok = in_archive or in_bundle
 ok &= font_ok
