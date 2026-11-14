@@ -192,10 +192,76 @@ def _bundled_font_path():
 
 
 _FONT_BLOB_PATH = [None]
+_FONT_LOG_LINES = []
+
+
+def _is_ascii_path(path):
+    """FreeType opens font files through a narrow-character API, so a path
+    containing non-ASCII characters (a Chinese Windows user name, a Chinese
+    folder) simply FAILS to open -- the font is silently unusable. Everything
+    we hand to pygame.font.Font() must therefore be pure ASCII."""
+    try:
+        return all(ord(c) < 128 for c in path)
+    except Exception:
+        return False
+
+
+def _ascii_write_dir():
+    """A writable directory whose path is pure ASCII, or None.
+
+    Candidates, in order:
+      * %PUBLIC%\\HeliOps  (C:\\Users\\Public -- writable by anyone)
+      * C:\\Windows\\Temp\\HeliOps
+      * the temp dir (may contain a non-ASCII user name -- last resort)
+    """
+    candidates = []
+    public = os.environ.get("PUBLIC")
+    if public:
+        candidates.append(os.path.join(public, "HeliOps"))
+    candidates.append(r"C:\Windows\Temp\HeliOps")
+    try:
+        import tempfile
+        candidates.append(os.path.join(tempfile.gettempdir(), "HeliOps"))
+    except Exception:
+        pass
+    for d in candidates:
+        if not _is_ascii_path(d):
+            continue
+        try:
+            os.makedirs(d, exist_ok=True)
+            probe = os.path.join(d, ".writable")
+            with open(probe, "w") as fh:
+                fh.write("x")
+            os.remove(probe)
+            return d
+        except Exception:
+            continue
+    return None
+
+
+def _write_font_bytes(data, tag):
+    """Write font bytes to an ASCII-only path and return it."""
+    import tempfile
+    dirs = []
+    ascii_dir = _ascii_write_dir()
+    if ascii_dir:
+        dirs.append(ascii_dir)
+    dirs.append(tempfile.gettempdir())
+    for d in dirs:
+        path = os.path.join(d, "heliops_font_%s.ttf" % tag)
+        if not _is_ascii_path(path):
+            continue
+        try:
+            with open(path, "wb") as fh:
+                fh.write(data)
+            return path
+        except Exception as e:
+            _FONT_LOG_LINES.append("could not write font to %s (%s)" % (path, e))
+    return None
 
 
 def _font_from_embedded_bytes():
-    """Write the embedded font to a temp file and return its path.
+    """Write the embedded font to a file and return its path.
 
     The font ships twice: as a PyInstaller data file (unpacked to a temp
     folder at runtime) and as base64 inside a Python module (compiled INTO the
@@ -207,15 +273,29 @@ def _font_from_embedded_bytes():
         return _FONT_BLOB_PATH[0]
     try:
         import base64
-        import tempfile
         data = base64.b64decode(heliops_font.FONT_B64)
-        fd, path = tempfile.mkstemp(prefix="heliops_font_", suffix=".ttf")
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-        _FONT_BLOB_PATH[0] = path
+        path = _write_font_bytes(data, "emb")
+        if path:
+            _FONT_BLOB_PATH[0] = path
         return path
     except Exception as e:
+        _FONT_LOG_LINES.append("embedded font unusable (%s)" % e)
         print("[font] WARNING: embedded font unusable (%s)" % e)
+        return None
+
+
+def _ascii_copy_of(path):
+    """Copy a font file to an ASCII-only path (FreeType cannot open the
+    original when the path contains non-ASCII characters)."""
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+        copy = _write_font_bytes(data, "data")
+        if copy:
+            _FONT_LOG_LINES.append("copied bundled font to ASCII path %s" % copy)
+        return copy
+    except Exception as e:
+        _FONT_LOG_LINES.append("copy to ASCII path failed (%s)" % e)
         return None
 
 
@@ -243,12 +323,21 @@ def _get_font(size):
     bundled = _bundled_font_path()
     if bundled:
         try:
-            f = pygame.font.Font(bundled, size)
+            path = bundled
+            if not _is_ascii_path(path):
+                # FreeType cannot open a font whose path contains non-ASCII
+                # characters -- copy it somewhere ASCII-safe first.
+                copy = _ascii_copy_of(path)
+                if copy:
+                    path = copy
+            f = pygame.font.Font(path, size)
             if _font_has_cjk(f):
                 FONT_SOURCE = "bundled"
                 return f
-            print("[font] WARNING: bundled font %s cannot draw Chinese" % bundled)
+            _FONT_LOG_LINES.append("bundled font %s cannot draw Chinese" % path)
+            print("[font] WARNING: bundled font %s cannot draw Chinese" % path)
         except Exception as e:
+            _FONT_LOG_LINES.append("cannot load bundled font %s (%s)" % (bundled, e))
             print("[font] WARNING: cannot load bundled font %s (%s)" % (bundled, e))
 
     # The data file did not work out -- fall back to the copy that is
@@ -260,8 +349,10 @@ def _get_font(size):
             if _font_has_cjk(f):
                 FONT_SOURCE = "embedded"
                 return f
+            _FONT_LOG_LINES.append("embedded font cannot draw Chinese")
             print("[font] WARNING: embedded font cannot draw Chinese")
         except Exception as e:
+            _FONT_LOG_LINES.append("cannot load embedded font (%s)" % e)
             print("[font] WARNING: cannot load embedded font (%s)" % e)
 
     for path in FONT_FILE_CANDIDATES:
@@ -330,8 +421,17 @@ try:
     with open(_font_log, "w", encoding="utf-8") as _fh:
         _fh.write("version: %s\n" % GAME_VERSION)
         _fh.write("font source: %s\n" % FONT_SOURCE)
-        _fh.write("bundled font path: %s\n" % (_bundled_font_path() or "(not found)"))
         _fh.write("cjk ok: %s\n" % FONT_OK)
+        _fh.write("bundled font path: %s\n" % (_bundled_font_path() or "(not found)"))
+        _fh.write("bundled path is ascii: %s\n" % _is_ascii_path(_bundled_font_path() or ""))
+        _fh.write("python: %s\n" % sys.version.split()[0])
+        _fh.write("platform: %s\n" % sys.platform)
+        if _FONT_LOG_LINES:
+            _fh.write("--- problems ---\n")
+            for line in _FONT_LOG_LINES:
+                _fh.write("%s\n" % line)
+        else:
+            _fh.write("problems: none\n")
 except Exception:
     pass
 
