@@ -133,5 +133,31 @@ print("  %-18s %s" % ("CJK font",
                       ("OK (in bundle)" if in_bundle else "MISSING!")))
 print("     (a build without the bundled font shows Chinese as boxes on Windows)")
 
+# ---- the font must ALSO be embedded in the code (second copy) ----
+# assets/HeliOps_CJK.ttf is a data file: PyInstaller unpacks it to a temp
+# folder at runtime, and that can be blocked (antivirus, folder policy) or
+# live under a path FreeType cannot open (non-ASCII user name). The same
+# bytes are compiled into the executable as a Python module, so there is
+# always a second copy.
+embedded_ok = False
+try:
+    import tempfile
+    import base64
+    from PyInstaller.archive.readers import ZlibArchiveReader
+    pyz_path = os.path.join(tempfile.gettempdir(), "heliops_verify.pyz")
+    with open(pyz_path, "wb") as fh:
+        fh.write(arch.extract("PYZ.pyz"))
+    pyz = ZlibArchiveReader(pyz_path)
+    if "heliops_font" in pyz.toc:
+        code = pyz.extract("heliops_font")
+        blob = max((c for c in code.co_consts if isinstance(c, str)), key=len, default="")
+        data = base64.b64decode(blob)
+        embedded_ok = data[:4] == b"\x00\x01\x00\x00"   # TrueType magic
+except Exception:
+    embedded_ok = False
+ok &= embedded_ok
+print("  %-18s %s" % ("embedded copy",
+                      "OK" if embedded_ok else "MISSING! (fallback unavailable)"))
+
 print("\nRESULT:", "PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)
