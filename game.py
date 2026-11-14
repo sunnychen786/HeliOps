@@ -16,12 +16,19 @@ import pickle
 import os
 import shutil
 
+try:
+    # The CJK font also lives inside this module as base64, so it survives
+    # even when the packaged data file cannot be unpacked.
+    import heliops_font
+except Exception:          # pragma: no cover - only if the module is missing
+    heliops_font = None
+
 # ==============================
 # Initialization
 # ==============================
 pygame.init()
 
-GAME_VERSION = "1.4.0"
+GAME_VERSION = "1.4.1"
 
 WIDTH, HEIGHT = 1200,800
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -184,13 +191,53 @@ def _bundled_font_path():
     return None
 
 
+_FONT_BLOB_PATH = [None]
+
+
+def _font_from_embedded_bytes():
+    """Write the embedded font to a temp file and return its path.
+
+    The font ships twice: as a PyInstaller data file (unpacked to a temp
+    folder at runtime) and as base64 inside a Python module (compiled INTO the
+    executable). The second copy cannot be blocked by antivirus or folder
+    policies, so it is the safety net when the data file is missing or
+    unreadable.
+    """
+    if _FONT_BLOB_PATH[0] and os.path.exists(_FONT_BLOB_PATH[0]):
+        return _FONT_BLOB_PATH[0]
+    try:
+        import base64
+        import tempfile
+        data = base64.b64decode(heliops_font.FONT_B64)
+        fd, path = tempfile.mkstemp(prefix="heliops_font_", suffix=".ttf")
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        _FONT_BLOB_PATH[0] = path
+        return path
+    except Exception as e:
+        print("[font] WARNING: embedded font unusable (%s)" % e)
+        return None
+
+
+def _font_status():
+    """One-line, always-readable (English) description of the font situation."""
+    if not FONT_OK:
+        return "FONT: NOT AVAILABLE - Chinese text cannot be shown"
+    src = FONT_SOURCE or "unknown"
+    if src.startswith("bundled"):
+        return "Font: bundled (shipped with the game) - OK"
+    if src.startswith("embedded"):
+        return "Font: embedded copy (restored at runtime) - OK"
+    return "Font: system (%s) - OK" % src
+
+
 def _get_font(size):
     """Get a CJK-capable font, on Windows / macOS / Linux.
 
-    Order: the bundled font (always identical everywhere) -> system files ->
-    system names. Every candidate is verified by actually rendering Chinese; a
-    font that cannot draw it is rejected no matter how plausible its name
-    looks.
+    Order: the bundled font file -> the font bytes embedded in the executable
+    -> system files -> system names. Every candidate is verified by actually
+    rendering Chinese; a font that cannot draw it is rejected no matter how
+    plausible its name looks.
     """
     global FONT_SOURCE
     bundled = _bundled_font_path()
@@ -203,6 +250,19 @@ def _get_font(size):
             print("[font] WARNING: bundled font %s cannot draw Chinese" % bundled)
         except Exception as e:
             print("[font] WARNING: cannot load bundled font %s (%s)" % (bundled, e))
+
+    # The data file did not work out -- fall back to the copy that is
+    # compiled into the executable.
+    blob = _font_from_embedded_bytes()
+    if blob:
+        try:
+            f = pygame.font.Font(blob, size)
+            if _font_has_cjk(f):
+                FONT_SOURCE = "embedded"
+                return f
+            print("[font] WARNING: embedded font cannot draw Chinese")
+        except Exception as e:
+            print("[font] WARNING: cannot load embedded font (%s)" % e)
 
     for path in FONT_FILE_CANDIDATES:
         if not os.path.exists(path):
@@ -3235,6 +3295,29 @@ def show_main_menu():
         msg_surf.set_alpha(min(255, search_message_timer * 3))
         screen.blit(msg_bg, (WIDTH // 2 - msg_bg.get_width() // 2, HEIGHT - 80))
         screen.blit(msg_surf, (WIDTH // 2 - msg_surf.get_width() // 2, HEIGHT - 74))
+
+    # ---- Font status line ----
+    # Drawn with the DEFAULT font in English on purpose: if the CJK font
+    # failed to load, a Chinese label here would be a box too, and the one
+    # thing the player needs to read is exactly this line.
+    status = _font_status()
+    st_font = pygame.font.SysFont(None, 20)
+    st_surf = st_font.render(status, True, (110, 230, 150) if FONT_OK else (255, 90, 80))
+    screen.blit(st_surf, (16, HEIGHT - 26))
+
+    if not FONT_OK:
+        # Make the failure impossible to miss: a full-width English banner.
+        panel = pygame.Surface((WIDTH - 80, 96), pygame.SRCALPHA)
+        panel.fill((40, 8, 8, 235))
+        pygame.draw.rect(panel, (255, 90, 80), (0, 0, panel.get_width(), panel.get_height()), 2)
+        screen.blit(panel, (40, HEIGHT // 2 - 40))
+        for i, line in enumerate([
+            "FONT ERROR: this build cannot display Chinese text.",
+            "The bundled font failed to load on this machine.",
+            "Please report the file: Documents/HeliOps/font.log",
+        ]):
+            s = st_font.render(line, True, (255, 190, 180))
+            screen.blit(s, (60, HEIGHT // 2 - 24 + i * 24))
 
 
 def show_death_screen():
