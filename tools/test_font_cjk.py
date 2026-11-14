@@ -42,6 +42,13 @@ def load_font_section():
     end = src.index("FONT_OK = _font_has_cjk(font_normal)")
     end = src.index("\n", end) + 1
     ns = {"pygame": pygame, "os": os, "sys": sys, "__file__": SRC}
+    # the embedded-font module (base64 copy compiled into the executable)
+    try:
+        sys.path.insert(0, ROOT)
+        import heliops_font
+        ns["heliops_font"] = heliops_font
+    except Exception:
+        pass
     exec(src[start:end], ns)
     return ns
 
@@ -158,8 +165,10 @@ saved_names = list(NS["FONT_NAME_CANDIDATES"])
 saved_patterns = list(NS["FONT_GLOB_PATTERNS"])
 saved_globdir = NS["FONT_GLOB_DIR"]
 saved_bundled = NS["BUNDLED_FONT"]
+saved_module = NS.get("heliops_font")
 try:
     NS["BUNDLED_FONT"] = "assets/__no_such_bundled_font__.ttf"
+    NS["heliops_font"] = None      # and no embedded copy either
     NS["FONT_FILE_CANDIDATES"] = ["/definitely/not/here.ttf"]
     NS["FONT_NAME_CANDIDATES"] = ["NoSuchFontFamilyXyz"]
     NS["FONT_GLOB_PATTERNS"] = ["no_such_font_*.ttf"]
@@ -174,6 +183,25 @@ finally:
     NS["FONT_GLOB_PATTERNS"] = saved_patterns
     NS["FONT_GLOB_DIR"] = saved_globdir
     NS["BUNDLED_FONT"] = saved_bundled
+    NS["heliops_font"] = saved_module
+
+# 6b. the font bytes embedded in the code must be restorable even when the
+#     data file is unusable (antivirus / folder policy / broken unpack)
+embed_path = NS.get("_font_from_embedded_bytes")
+if embed_path is None or NS.get("heliops_font") is None:
+    check("the embedded font copy can be restored to a file", False,
+          "heliops_font module missing")
+else:
+    try:
+        blob = embed_path()
+        ok_blob = bool(blob) and os.path.exists(blob)
+        if ok_blob:
+            bf2 = pygame.font.Font(blob, 28)
+            ok_blob = has_cjk(bf2)
+        check("the embedded font copy can be restored to a file", ok_blob,
+              os.path.basename(blob) if blob else "no file")
+    except Exception as e:
+        check("the embedded font copy can be restored to a file", False, str(e))
 
 # 7. the bundled font must win over the system fonts -- that is the whole
 #    point of shipping it
