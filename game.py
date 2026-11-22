@@ -28,7 +28,7 @@ except Exception:          # pragma: no cover - only if the module is missing
 # ==============================
 pygame.init()
 
-GAME_VERSION = "1.4.2"
+GAME_VERSION = "1.4.3"
 
 WIDTH, HEIGHT = 1200,800
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -469,10 +469,140 @@ font_normal = _get_font(32)
 font_big    = _get_font(56)
 font_huge   = _get_font(80)
 
+
+# ---------------------------------------------------------------------------
+# Text rendering mode
+# ---------------------------------------------------------------------------
+# A font can render perfectly and still come out as a solid block once it is
+# blitted to the display: on some macOS/SDL combinations the per-pixel alpha
+# of the glyph mask is blended as if it were a colour channel, which paints the
+# whole glyph box in the text colour. The font file, the font size and the
+# advance widths all stay correct, so the UI looks like coloured bars where
+# the text should be.
+#
+# Rather than guess which machine is affected, probe the actual display once
+# at startup: blit a known string, count how much of the text colour ended up
+# on screen, and if the glyphs are flooded pick a rendering mode that cannot
+# hit the bug.
+#
+# Modes:
+#   "aa"    - antialiased, alpha blended (normal, best looking)
+#   "solid" - antialias off, no alpha channel at all
+#   "flat"  - antialias off, then flattened onto an opaque RGB surface
+TEXT_MODE = "aa"
+
+
+def _text_solid_ink_ratio(surf, color):
+    """Fraction of pixels in `surf` that carry `color`."""
+    px = pygame.image.tostring(surf, "RGB")
+    n = len(px) // 3
+    if not n:
+        return 0.0
+    r, g, b = color
+    hit = 0
+    for i in range(0, len(px), 3):
+        if (abs(px[i] - r) < 40 and abs(px[i + 1] - g) < 40
+                and abs(px[i + 2] - b) < 50):
+            hit += 1
+    return hit / n
+
+
+def _probe_text_mode():
+    """Decide how text must be drawn so the glyphs survive on this machine.
+
+    Returns the mode name. Anything that looks flooded falls back to the
+    safest option rather than leaving the player with a screen of bars.
+    """
+    global TEXT_MODE
+    probe_font = font_normal
+    text = "HeliOps 撤离"
+    color = (240, 240, 240)
+
+    def ink_after_blit(surf):
+        """Blit onto the REAL display surface.
+
+        A temporary surface hides the problem: the display driver only
+        misbehaves when the text reaches the actual framebuffer, so the
+        probe has to go all the way there.
+        """
+        screen.fill((10, 16, 28))
+        screen.blit(surf, (0, 0))
+        pygame.display.flip()
+        region = screen.subsurface((0, 0, surf.get_width(), surf.get_height()))
+        return _text_solid_ink_ratio(region, color)
+
+    # 1) normal antialiased rendering
+    try:
+        normal = probe_font.render(text, True, color)
+        ratio = ink_after_blit(normal)
+        if ratio < 0.55:
+            TEXT_MODE = "aa"
+            return TEXT_MODE
+        _FONT_LOG_LINES.append("antialiased text flooded (ink=%.2f)" % ratio)
+    except Exception as exc:
+        _FONT_LOG_LINES.append("antialiased render failed (%s)" % exc)
+
+    # 2) antialias off -> the surface carries no alpha channel, so nothing
+    #    can be blended the wrong way
+    try:
+        solid = probe_font.render(text, False, color)
+        ratio = ink_after_blit(solid)
+        if ratio < 0.55:
+            TEXT_MODE = "solid"
+            return TEXT_MODE
+        _FONT_LOG_LINES.append("solid text flooded (ink=%.2f)" % ratio)
+    except Exception as exc:
+        _FONT_LOG_LINES.append("solid render failed (%s)" % exc)
+
+    # 3) flatten onto an opaque RGB surface: no alpha anywhere
+    try:
+        flat = probe_font.render(text, True, color)
+        out = pygame.Surface(flat.get_size(), 0, 24)
+        out.fill((10, 16, 28))
+        out.blit(flat, (0, 0))
+        ratio = ink_after_blit(out)
+        if ratio < 0.55:
+            TEXT_MODE = "flat"
+            return TEXT_MODE
+        _FONT_LOG_LINES.append("flat text flooded (ink=%.2f)" % ratio)
+    except Exception as exc:
+        _FONT_LOG_LINES.append("flat render failed (%s)" % exc)
+
+    _FONT_LOG_LINES.append("all text modes flooded")
+    TEXT_MODE = "flat"
+    return TEXT_MODE
+
+
+def render_text(font, text, color, bg=None):
+    """Render `text` the way this machine needs it.
+
+    Every caller in the game goes through here so a single switch fixes the
+    whole UI at once.
+
+    `bg` is the colour the text will sit on; it is only used by the "flat"
+    fallback, which bakes the background into the surface so that nothing
+    has to be alpha-blended at all.
+    """
+    if TEXT_MODE == "aa":
+        return font.render(text, True, color)
+    if TEXT_MODE == "solid":
+        return font.render(text, False, color)
+    flat = font.render(text, True, color)
+    out = pygame.Surface(flat.get_size(), 0, 24)
+    out.fill(bg if bg is not None else (10, 16, 28))
+    out.blit(flat, (0, 0))
+    return out
+
 # True when the UI text can actually be read. The main menu shows a warning
 # banner when it is False, so the failure is visible instead of silent.
 FONT_OK = _font_has_cjk(font_normal)
 print("[font] using: %s (bundled=%s)" % (FONT_SOURCE, bool(_bundled_font_path())))
+
+try:
+    _probe_text_mode()
+except Exception as _exc:
+    _FONT_LOG_LINES.append("text mode probe failed (%s)" % _exc)
+print("[font] text mode: %s" % TEXT_MODE)
 
 def _default_font_usable():
     """Can pygame's DEFAULT font render Latin here?
@@ -491,6 +621,51 @@ def _default_font_usable():
         return False
 
 
+def _font_render_dump():
+    """Save one PNG per font size plus a pixel report.
+
+    A player reporting "everything is a solid block" needs more than a
+    yes/no CJK check: the glyphs can be *shaped* correctly yet end up filled
+    in on screen. Rendering the same strings to a file proves where the
+    damage happens -- in the font object, or later, on the display surface.
+    """
+    try:
+        out_dir = os.path.join(os.path.expanduser("~"), "Documents", "HeliOps")
+        os.makedirs(out_dir, exist_ok=True)
+        report = []
+        sheet = pygame.Surface((760, 300))
+        sheet.fill((12, 16, 28))
+        y = 10
+        for size in (24, 32, 56, 80):
+            for text in ("HeliOps", "\u76f4\u5347\u673a\u64a4\u79bb"):
+                # use the very font objects the game draws with
+                f = {24: font_small, 32: font_normal,
+                     56: font_big, 80: font_huge}[size]
+                surf = f.render(text, True, (245, 245, 250))
+                # count pixels without numpy (the frozen build has no numpy)
+                _px = pygame.image.tostring(surf, "RGBA")
+                _n = len(_px) // 4
+                _solid = sum(1 for i in range(0, len(_px), 4) if _px[i + 3] > 250)
+                solid = float(_solid) / _n if _n else 0.0
+                report.append("size=%d %-14s surface=%s solid=%.3f"
+                              % (size, text, surf.get_size(), solid))
+                if size == 32:
+                    sheet.blit(surf, (10, y))
+                    y += surf.get_height() + 6
+        pygame.image.save(sheet, os.path.join(out_dir, "font_render.png"))
+        with open(os.path.join(out_dir, "font_render.txt"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("\n".join(report) + "\n")
+    except Exception as exc:
+        print("[font] dump failed: %s" % exc)
+
+
+try:
+    _font_render_dump()
+except Exception as _exc:
+    print("[font] dump failed: %s" % _exc)
+
+
 # Leave a trace on disk: if a player reports "the text is all boxes", this
 # file says which font the build actually loaded and where it came from.
 try:
@@ -501,6 +676,7 @@ try:
         _fh.write("font source: %s\n" % FONT_SOURCE)
         _fh.write("cjk ok: %s\n" % FONT_OK)
         _fh.write("pygame default font usable: %s\n" % _default_font_usable())
+        _fh.write("text mode: %s\n" % TEXT_MODE)
         _fh.write("bundled font path: %s\n" % (_bundled_font_path() or "(not found)"))
         _fh.write("bundled path is ascii: %s\n" % _is_ascii_path(_bundled_font_path() or ""))
         _fh.write("python: %s\n" % sys.version.split()[0])
@@ -1835,10 +2011,10 @@ def draw_enemy(ewx, ewy, state):
 
     # State indicator (floats just above the sprite)
     if state == "chase":
-        warn_text = font_small.render("!", True, (255, 50, 50))
+        warn_text = render_text(font_small, "!", (255, 50, 50))
         screen.blit(warn_text, (sx + enemy_size // 2 - 3, sp_top - 20))
     elif state == "tired":
-        zzz_text = font_small.render("Z", True, GRAY)
+        zzz_text = render_text(font_small, "Z", GRAY)
         screen.blit(zzz_text, (sx + enemy_size // 2 - 3, sp_top - 20))
 
 def draw_supply(swx, swy, stype, searching=False):
@@ -2040,7 +2216,7 @@ def draw_boss(b):
     pygame.draw.rect(screen, (255, 200, 40), (bar_x, bar_y, bar_w, bar_h), 1, border_radius=2)
 
     # BOSS label
-    boss_label = font_small.render("BOSS", True, (255, 50, 50))
+    boss_label = render_text(font_small, "BOSS", (255, 50, 50))
     screen.blit(boss_label, (sx + bs // 2 - boss_label.get_width() // 2, bar_y - 20))
 
 def draw_chaser(c):
@@ -2100,8 +2276,7 @@ def draw_chaser(c):
                      (bar_x, bar_y, int(bar_w * hp_ratio), bar_h), border_radius=2)
 
     # Label
-    label = font_small.render("猎手" if detected else "?", True,
-                              (255, 200, 100) if detected else GRAY)
+    label = render_text(font_small, "猎手" if detected else "?", (255, 200, 100) if detected else GRAY)
     screen.blit(label, (sx + cs // 2 - label.get_width() // 2, bar_y - 22))
 
     # Tracking line when target acquired
@@ -2183,10 +2358,9 @@ def draw_super_chaser(sc):
 
     # Invincible + Super Chaser labels (stacked above the sprite)
     sp_top = sy + ss - spr.get_height()
-    inv_label = font_small.render("无敌", True, (200, 255, 100))
+    inv_label = render_text(font_small, "无敌", (200, 255, 100))
     screen.blit(inv_label, (sx + ss // 2 - inv_label.get_width() // 2, sp_top - 22))
-    label = font_small.render("超级猎手" if detected else "???", True,
-                              (100, 255, 150) if detected else GRAY)
+    label = render_text(font_small, "超级猎手" if detected else "???", (100, 255, 150) if detected else GRAY)
     screen.blit(label, (sx + ss // 2 - label.get_width() // 2, sp_top - 40))
 
     # Tracking line when target acquired (bright green)
@@ -2313,10 +2487,10 @@ def draw_extract_zone(ez):
         c = tuple(min(255, int(v * pulse * (1 + offset * 0.2))) for v in EXTRACT_COLOR)
         pygame.draw.rect(screen, c, rect, max(1, 3 - offset), border_radius=8)
 
-    icon_text = font_big.render("▼", True, EXTRACT_COLOR)
+    icon_text = render_text(font_big, "▼", EXTRACT_COLOR)
     screen.blit(icon_text, (cx - icon_text.get_width() // 2, cy - 18))
 
-    zone_text = font_small.render("撤离点", True, WHITE)
+    zone_text = render_text(font_small, "撤离点", WHITE)
     screen.blit(zone_text, (cx - zone_text.get_width() // 2, esy + extract_size - 18))
 
     # Hold progress bar (shown when player is in zone)
@@ -2331,7 +2505,7 @@ def draw_extract_zone(ez):
         pygame.draw.rect(screen, bar_color,
                          (bar_x, bar_y, int(bar_w * progress), bar_h), border_radius=4)
         sec_left = int((EXTRACT_HOLD_FRAMES - extract_hold_timer) / 60) + 1
-        hold_text = font_small.render(f"撤离停留中... {sec_left}秒", True, (255, 255, 150))
+        hold_text = render_text(font_small, f"撤离停留中... {sec_left}秒", (255, 255, 150))
         screen.blit(hold_text, (cx - hold_text.get_width() // 2, bar_y - 20))
 
     # Screen edge arrow (computed in screen coords)
@@ -2449,7 +2623,7 @@ def draw_reload_gauge():
                      (cx - bar_w // 2, cy, bar_w, bar_h), border_radius=3)
     pygame.draw.rect(screen, (110, 200, 255),
                      (cx - bar_w // 2, cy, int(bar_w * done), bar_h), border_radius=3)
-    label = font_small.render("换弹中", True, (150, 210, 255))
+    label = render_text(font_small, "换弹中", (150, 210, 255))
     screen.blit(label, (cx - label.get_width() // 2, cy - label.get_height() - 1))
 
 
@@ -2685,7 +2859,7 @@ def draw_extract_lift():
 
     # caption
     msg = "直升机降落中…" if t < 0.6 else "升空撤离！"
-    cap = font_big.render(msg, True, EXTRACT_COLOR)
+    cap = render_text(font_big, msg, EXTRACT_COLOR)
     cy = 200
     bg = pygame.Surface((cap.get_width() + 60, cap.get_height() + 20), pygame.SRCALPHA)
     bg.fill((6, 10, 18, 180))
@@ -2703,13 +2877,13 @@ def draw_hud():
     bar_bg.fill((0, 0, 0, 130))
     screen.blit(bar_bg, (0, 0))
 
-    screen.blit(font_normal.render(f"分数: {score}", True, WHITE), (12, 2))
+    screen.blit(render_text(font_normal, f"分数: {score}", WHITE), (12, 2))
 
     # Time-of-day tag (top-right, above the weapon bar)
     tod_icon = TIME_OF_DAY_ICON.get(time_of_day, "")
     tod_name = TIME_OF_DAY_NAMES.get(time_of_day, "白昼")
     tod_col = TIME_OF_DAY_HUD_COLOR.get(time_of_day, WHITE)
-    tod_surf = font_normal.render(f"{tod_icon} {tod_name}", True, tod_col)
+    tod_surf = render_text(font_normal, f"{tod_icon} {tod_name}", tod_col)
     screen.blit(tod_surf, (WIDTH - 16 - tod_surf.get_width(), 20))
 
     # HP: draw one heart icon + count (e.g., ♥ x 5)
@@ -2717,7 +2891,7 @@ def draw_hud():
     hy = 16
     heart_size = 10
     draw_heart(screen, hx, hy, heart_size)
-    screen.blit(font_small.render(f"x {lives}", True, (255, 80, 80)),
+    screen.blit(render_text(font_small, f"x {lives}", (255, 80, 80)),
                 (hx + heart_size + 10, hy - 8))
 
     # Armor: draw one shield icon + count, same format as HP
@@ -2726,28 +2900,28 @@ def draw_hud():
         ay = hy
         shield_w, shield_h = 18, 22
         draw_shield(screen, ax, ay, shield_w, shield_h)
-        screen.blit(font_small.render(f"x {armor}", True, (180, 210, 240)),
+        screen.blit(render_text(font_small, f"x {armor}", (180, 210, 240)),
                     (ax + shield_w + 6, ay - 8))
 
-    screen.blit(font_normal.render(f"倍率: x{extract_multiplier:.1f}", True, EXTRACT_COLOR),
+    screen.blit(render_text(font_normal, f"倍率: x{extract_multiplier:.1f}", EXTRACT_COLOR),
                 (WIDTH - 550, 6))
 
     # Backpack on second row, clear of the 44px-tall score render above it
     bp_x = 10
     bp_y = 48
     # "（空）" and the "0/8" counter used to be blitted on top of each other
-    screen.blit(font_small.render("背包:", True, WHITE), (bp_x, bp_y + 2))
+    screen.blit(render_text(font_small, "背包:", WHITE), (bp_x, bp_y + 2))
     if len(backpack) == 0:
-        screen.blit(font_small.render("（空）", True, GRAY), (bp_x + 62, bp_y + 2))
+        screen.blit(render_text(font_small, "（空）", GRAY), (bp_x + 62, bp_y + 2))
     else:
-        screen.blit(font_small.render(f"{len(backpack)}/{backpack_max}", True, GRAY),
+        screen.blit(render_text(font_small, f"{len(backpack)}/{backpack_max}", GRAY),
                     (bp_x + 62, bp_y + 2))
         for i, item in enumerate(backpack):
             pygame.draw.circle(screen, SUPPLY_TYPES[item]["color"],
                                (bp_x + 126 + i * 20, bp_y + 11), 7)
 
     # Estimated value (right of backpack row)
-    ev_text = font_small.render(f"预估: {estimated_value}", True, EXTRACT_COLOR)
+    ev_text = render_text(font_small, f"预估: {estimated_value}", EXTRACT_COLOR)
     screen.blit(ev_text, (WIDTH - ev_text.get_width() - 12, bp_y + 2))
 
     remaining_sec = mission_timer // 60
@@ -2756,12 +2930,12 @@ def draw_hud():
     clock_cx = WIDTH - 175
     clock_cy = 18
     draw_clock_icon(screen, clock_cx, clock_cy, 10, timer_color)
-    screen.blit(font_normal.render(f"{remaining_sec}s", True, timer_color),
+    screen.blit(render_text(font_normal, f"{remaining_sec}s", timer_color),
                 (WIDTH - 160, 6))
 
     # Extraction message
     if extraction_message_timer > 0:
-        msg_surf = font_big.render(extraction_message, True, EXTRACT_COLOR)
+        msg_surf = render_text(font_big, extraction_message, EXTRACT_COLOR)
         bg_rect  = pygame.Rect(WIDTH // 2 - msg_surf.get_width() // 2 - 20,
                                HEIGHT // 2 - 100 - 10,
                                msg_surf.get_width() + 40, msg_surf.get_height() + 20)
@@ -2773,7 +2947,7 @@ def draw_hud():
 
     # Super Chaser broadcast
     if super_chaser_broadcast_timer > 0:
-        scb_surf = font_big.render(super_chaser_broadcast, True, SUPER_CHASER_COLOR)
+        scb_surf = render_text(font_big, super_chaser_broadcast, SUPER_CHASER_COLOR)
         bg_rect  = pygame.Rect(WIDTH // 2 - scb_surf.get_width() // 2 - 20,
                                HEIGHT // 2 - 100 - 10,
                                scb_surf.get_width() + 40, scb_surf.get_height() + 20)
@@ -2786,7 +2960,7 @@ def draw_hud():
     # Save message
     if save_message_timer > 0:
         sv_color = (100, 255, 150) if "saved" in save_message.lower() else (255, 150, 100)
-        sv_surf = font_normal.render(save_message, True, sv_color)
+        sv_surf = render_text(font_normal, save_message, sv_color)
         sv_rect = pygame.Rect(WIDTH // 2 - sv_surf.get_width() // 2 - 12,
                               HEIGHT // 2 + 40 - 6,
                               sv_surf.get_width() + 24, sv_surf.get_height() + 12)
@@ -2799,7 +2973,7 @@ def draw_hud():
     # Search complete message
     if search_message_timer > 0:
         msg_color = (100, 220, 255) if "cancelled" not in search_message.lower() else (255, 200, 100)
-        sm_surf = font_big.render(search_message, True, msg_color)
+        sm_surf = render_text(font_big, search_message, msg_color)
         sm_rect = pygame.Rect(WIDTH // 2 - sm_surf.get_width() // 2 - 16,
                               HEIGHT // 2 - 30 - 8,
                               sm_surf.get_width() + 32, sm_surf.get_height() + 16)
@@ -2812,20 +2986,17 @@ def draw_hud():
     # Bottom status bar
     if game_over:
         if game_over_reason == "time_up":
-            status_text = font_small.render("任务时间耗尽", True, (255, 180, 80))
+            status_text = render_text(font_small, "任务时间耗尽", (255, 180, 80))
         else:
-            status_text = font_small.render("! 已被击倒", True, (255, 80, 80))
+            status_text = render_text(font_small, "! 已被击倒", (255, 80, 80))
     elif extract_hold_timer > 0:
         pct = int(extract_hold_timer / EXTRACT_HOLD_FRAMES * 100)
-        status_text = font_small.render(f"● 撤离中... {pct}%  稳住！",
-                                        True, EXTRACT_COLOR)
+        status_text = render_text(font_small, f"● 撤离中... {pct}%  稳住！", EXTRACT_COLOR)
     elif searching_supply is not None:
         pct = int((1 - search_timer / SEARCH_DURATION) * 100)
-        status_text = font_small.render(f"◎ 搜索中... {pct}%  别走远！",
-                                        True, (100, 220, 255))
+        status_text = render_text(font_small, f"◎ 搜索中... {pct}%  别走远！", (100, 220, 255))
     else:
-        status_text = font_small.render("● J搜索  |  走到撤离点停留3秒  |  ESC暂停",
-                                        True, (100, 220, 100))
+        status_text = render_text(font_small, "● J搜索  |  走到撤离点停留3秒  |  ESC暂停", (100, 220, 100))
     screen.blit(status_text, (WIDTH // 2 - status_text.get_width() // 2, HEIGHT - 22))
 
     # Mission timer progress bar
@@ -2845,7 +3016,7 @@ def draw_hud():
     danger_color = (int(255 * danger_level), int(200 * (1 - danger_level)), 50)
     pygame.draw.rect(screen, danger_color,
                      (WIDTH - danger_w - 12, HEIGHT - 20, int(danger_w * danger_level), 6))
-    screen.blit(font_small.render("警戒", True, GRAY), (WIDTH - danger_w - 50, HEIGHT - 22))
+    screen.blit(render_text(font_small, "警戒", GRAY), (WIDTH - danger_w - 50, HEIGHT - 22))
 
     # Ammo readout: rounds loaded / magazine size, plus the reserve pool.
     # While reloading it turns into a "换弹中 xx%" indicator.
@@ -2853,14 +3024,13 @@ def draw_hud():
     if reload_timer > 0:
         done = 1.0 - reload_timer / float(reload_total or 1)
         ammo_color = (140, 210, 255)
-        ammo_text = font_small.render("换弹中 %d%%" % int(done * 100), True, ammo_color)
+        ammo_text = render_text(font_small, "换弹中 %d%%" % int(done * 100), ammo_color)
     elif mag_now == 0:
         ammo_color = (255, 60, 60)
-        ammo_text = font_small.render(
-            "弹匣 空 · 备弹 %d" % bullet_count, True, ammo_color)
+        ammo_text = render_text(font_small, "弹匣 空 · 备弹 %d" % bullet_count, ammo_color)
     else:
         ammo_color = (255, 240, 100) if mag_now > mag_max * 0.3 else (255, 140, 60)
-        ammo_text = font_small.render(
+        ammo_text = render_text(font_small, 
             "弹药 %d/%d · 备弹 %d" % (mag_now, mag_max, bullet_count), True, ammo_color)
     # right-aligned just above the mission timer: the bottom-right corner is
     # already taken by the danger bar / "警戒" label
@@ -2875,19 +3045,19 @@ def draw_hud():
             g = GUN_TYPES[gn]
             is_current = (gn == current_gun)
             g_color = g['color'] if is_current else (100, 100, 100)
-            g_label = font_small.render(f"{'▶' if is_current else ' '} {g['name']}", True, g_color)
+            g_label = render_text(font_small, f"{'▶' if is_current else ' '} {g['name']}", g_color)
             screen.blit(g_label, (gun_x, 50 + i * 22))
     # Scroll wheel hint
-    wheel_hint = font_small.render("Tab/滚轮/1-5 切枪", True, (120, 120, 120))
+    wheel_hint = render_text(font_small, "Tab/滚轮/1-5 切枪", (120, 120, 120))
     screen.blit(wheel_hint, (gun_x, 50 + len([g for g in gun_list if g in owned_guns]) * 22 + 2))
 
     # Ammo depleted hint (centered red text)
     if ammo_empty_timer > 0:
-        et = font_normal.render("! 弹药耗尽！搜索弹药箱补给", True, (255, 80, 80))
+        et = render_text(font_normal, "! 弹药耗尽！搜索弹药箱补给", (255, 80, 80))
         screen.blit(et, (WIDTH // 2 - et.get_width() // 2, HEIGHT // 2 - 60))
 
     # World coords position hint (bottom-left small text)
-    pos_text = font_small.render(
+    pos_text = render_text(font_small, 
         f"坐标 ({int(player_x)}, {int(player_y)})  地图 {WORLD_W}x{WORLD_H}",
         True, (80, 80, 100))
     screen.blit(pos_text, (8, HEIGHT - 22))
@@ -2911,12 +3081,12 @@ def draw_shop():
     cy = panel_y + 20
 
     # Title
-    title = font_big.render("撤离成功！补给站", True, EXTRACT_COLOR)
+    title = render_text(font_big, "撤离成功！补给站", EXTRACT_COLOR)
     screen.blit(title, (WIDTH // 2 - title.get_width() // 2, cy))
     cy += title.get_height() + 5
 
     # Score summary
-    summary = font_small.render(f"分数: {score}   |   生命: {lives}/{max_lives}   |   护甲: {armor}", True, WHITE)
+    summary = render_text(font_small, f"分数: {score}   |   生命: {lives}/{max_lives}   |   护甲: {armor}", WHITE)
     screen.blit(summary, (WIDTH // 2 - summary.get_width() // 2, cy))
     cy += 40
 
@@ -2930,13 +3100,13 @@ def draw_shop():
     for key, label, cost, available in options:
         color = WHITE if available else GRAY
         cost_color = (100, 255, 100) if available else (120, 120, 120)
-        line = font_normal.render(f"[{key}] {label}   {cost} 分", True, color)
+        line = render_text(font_normal, f"[{key}] {label}   {cost} 分", color)
         screen.blit(line, (panel_x + 50, cy))
         cy += 50
 
     cy += 5
     # Armory divider
-    gun_label = font_normal.render("── 武器库 ──", True, (200, 200, 100))
+    gun_label = render_text(font_normal, "── 武器库 ──", (200, 200, 100))
     screen.blit(gun_label, (panel_x + 50, cy))
     cy += 30
 
@@ -2952,22 +3122,22 @@ def draw_shop():
     ]
     for key, label, cost, available, status in gun_options:
         color = WHITE if available else GRAY
-        line = font_normal.render(f"[{key}] {label}   {status}", True, color)
+        line = render_text(font_normal, f"[{key}] {label}   {status}", color)
         screen.blit(line, (panel_x + 50, cy))
         cy += 28
 
     cy += 10
 
     # Redeploy button
-    action_text = font_normal.render("[Enter] 再次出发", True, (100, 255, 150))
+    action_text = render_text(font_normal, "[Enter] 再次出发", (100, 255, 150))
     screen.blit(action_text, (WIDTH // 2 - action_text.get_width() // 2, cy))
 
     cy += 50
-    help_text = font_small.render("撤离点已重置 - 准备下一轮任务", True, GRAY)
+    help_text = render_text(font_small, "撤离点已重置 - 准备下一轮任务", GRAY)
     screen.blit(help_text, (WIDTH // 2 - help_text.get_width() // 2, cy))
 
     cy += 30
-    back_text = font_small.render("[0] 返回主菜单", True, (200, 200, 200))
+    back_text = render_text(font_small, "[0] 返回主菜单", (200, 200, 200))
     screen.blit(back_text, (WIDTH // 2 - back_text.get_width() // 2, cy))
 
 
@@ -2989,17 +3159,17 @@ def draw_transfer_station():
     cy = panel_y + 20
 
     # Title
-    title = font_big.render("! 已被击倒！", True, (255, 80, 80))
+    title = render_text(font_big, "! 已被击倒！", (255, 80, 80))
     screen.blit(title, (WIDTH // 2 - title.get_width() // 2, cy))
     cy += title.get_height() + 5
 
     # Transfer station subtitle
-    sub = font_small.render("中转站 - 预估价值和背包已清空", True, GRAY)
+    sub = render_text(font_small, "中转站 - 预估价值和背包已清空", GRAY)
     screen.blit(sub, (WIDTH // 2 - sub.get_width() // 2, cy))
     cy += 40
 
     # Status summary
-    summary = font_small.render(f"分数: {score}   |   生命: {lives}/{max_lives}   |   护甲: {armor}", True, WHITE)
+    summary = render_text(font_small, f"分数: {score}   |   生命: {lives}/{max_lives}   |   护甲: {armor}", WHITE)
     screen.blit(summary, (WIDTH // 2 - summary.get_width() // 2, cy))
     cy += 40
 
@@ -3012,13 +3182,13 @@ def draw_transfer_station():
 
     for key, label, cost, available in options:
         color = WHITE if available else GRAY
-        line = font_normal.render(f"[{key}] {label}   {cost} 分", True, color)
+        line = render_text(font_normal, f"[{key}] {label}   {cost} 分", color)
         screen.blit(line, (panel_x + 50, cy))
         cy += 50
 
     cy += 5
     # Armory divider
-    gun_label = font_normal.render("── 武器库 ──", True, (200, 200, 100))
+    gun_label = render_text(font_normal, "── 武器库 ──", (200, 200, 100))
     screen.blit(gun_label, (panel_x + 50, cy))
     cy += 30
 
@@ -3034,18 +3204,18 @@ def draw_transfer_station():
     ]
     for key, label, cost, available, status in gun_options:
         color = WHITE if available else GRAY
-        line = font_normal.render(f"[{key}] {label}   {status}", True, color)
+        line = render_text(font_normal, f"[{key}] {label}   {status}", color)
         screen.blit(line, (panel_x + 50, cy))
         cy += 28
 
     cy += 10
 
     # Redeploy button
-    action_text = font_normal.render("[Enter] 再次出发", True, (255, 200, 100))
+    action_text = render_text(font_normal, "[Enter] 再次出发", (255, 200, 100))
     screen.blit(action_text, (WIDTH // 2 - action_text.get_width() // 2, cy))
 
     cy += 50
-    help_text = font_small.render("再次出发，保持警惕！", True, GRAY)
+    help_text = render_text(font_small, "再次出发，保持警惕！", GRAY)
     screen.blit(help_text, (WIDTH // 2 - help_text.get_width() // 2, cy))
 
 
@@ -3054,7 +3224,7 @@ def show_settings():
     draw_menu_backdrop()
 
     cy = 48
-    title = font_huge.render("设置", True, MENU_ACCENT)
+    title = render_text(font_huge, "设置", MENU_ACCENT)
     screen.blit(title, (WIDTH // 2 - title.get_width() // 2, cy))
     cy += title.get_height() + 8
     pygame.draw.line(screen, MENU_RULE, (WIDTH // 2 - 190, cy), (WIDTH // 2 + 190, cy), 2)
@@ -3062,34 +3232,34 @@ def show_settings():
 
     # SFX toggle
     toggle_text = "开" if sfx_enabled else "关"
-    sfx_line = font_normal.render(f"音效: {toggle_text}  [T] 开关", True, (200, 200, 200))
+    sfx_line = render_text(font_normal, f"音效: {toggle_text}  [T] 开关", (200, 200, 200))
     screen.blit(sfx_line, (WIDTH // 2 - sfx_line.get_width() // 2, cy))
     cy += 40
 
     # SFX volume
     bar_w = 200
     bar_x = WIDTH // 2 - bar_w // 2
-    sfx_label = font_normal.render(f"音效音量: {int(sfx_volume * 100)}%", True, (200, 200, 200))
+    sfx_label = render_text(font_normal, f"音效音量: {int(sfx_volume * 100)}%", (200, 200, 200))
     screen.blit(sfx_label, (WIDTH // 2 - sfx_label.get_width() // 2, cy))
     cy += sfx_label.get_height() + 6      # clear of the label's descenders
     pygame.draw.rect(screen, (50, 50, 60), (bar_x, cy, bar_w, 12), border_radius=6)
     pygame.draw.rect(screen, (100, 200, 255), (bar_x, cy, int(bar_w * sfx_volume), 12), border_radius=6)
-    hint = font_small.render("[← →] 调节", True, (120, 120, 120))
+    hint = render_text(font_small, "[← →] 调节", (120, 120, 120))
     screen.blit(hint, (WIDTH // 2 + bar_w // 2 + 10, cy - 2))
     cy += 28
 
     # BGM volume
-    bgm_label = font_normal.render(f"背景音乐音量: {int(bgm_volume * 100)}%", True, (200, 200, 200))
+    bgm_label = render_text(font_normal, f"背景音乐音量: {int(bgm_volume * 100)}%", (200, 200, 200))
     screen.blit(bgm_label, (WIDTH // 2 - bgm_label.get_width() // 2, cy))
     cy += bgm_label.get_height() + 6
     pygame.draw.rect(screen, (50, 50, 60), (bar_x, cy, bar_w, 12), border_radius=6)
     pygame.draw.rect(screen, (100, 255, 100), (bar_x, cy, int(bar_w * bgm_volume), 12), border_radius=6)
-    hint2 = font_small.render("[↑ ↓] 调节", True, (120, 120, 120))
+    hint2 = render_text(font_small, "[↑ ↓] 调节", (120, 120, 120))
     screen.blit(hint2, (WIDTH // 2 + bar_w // 2 + 10, cy - 2))
     cy += 36
 
     # Controls
-    section = font_normal.render("── 操作说明 ──", True, (255, 200, 100))
+    section = render_text(font_normal, "── 操作说明 ──", (255, 200, 100))
     screen.blit(section, (WIDTH // 2 - section.get_width() // 2, cy))
     cy += section.get_height() + 2     # font_normal(32) is ~44px tall, not 28
     controls = [
@@ -3102,19 +3272,19 @@ def show_settings():
         ("Q", "退出游戏"),
     ]
     for key_t, desc in controls:
-        ctrl_line = font_small.render(f"  {key_t}:  {desc}", True, (180, 200, 220))
+        ctrl_line = render_text(font_small, f"  {key_t}:  {desc}", (180, 200, 220))
         screen.blit(ctrl_line, (WIDTH // 2 - 200, cy))
         # advance by the real rendered height: font_small(24) with CJK glyphs is
         # taller than 20px, which made these lines overlap each other
         cy += ctrl_line.get_height() + 2
 
     cy += 12
-    back_hint = font_normal.render("[ESC] 返回主菜单", True, (160, 160, 160))
+    back_hint = render_text(font_normal, "[ESC] 返回主菜单", (160, 160, 160))
     screen.blit(back_hint, (WIDTH // 2 - back_hint.get_width() // 2, cy))
 
     # Message hint
     if search_message_timer > 0:
-        msg_surf = font_small.render(search_message, True, (100, 220, 255))
+        msg_surf = render_text(font_small, search_message, (100, 220, 255))
         screen.blit(msg_surf, (WIDTH // 2 - msg_surf.get_width() // 2, cy + 30))
 
 
@@ -3123,7 +3293,7 @@ def show_tutorial():
     draw_menu_backdrop()
 
     cy = 40
-    title = font_huge.render("操作指南", True, MENU_ACCENT)
+    title = render_text(font_huge, "操作指南", MENU_ACCENT)
     screen.blit(title, (WIDTH // 2 - title.get_width() // 2, cy))
     cy += title.get_height() + 8
     pygame.draw.line(screen, MENU_RULE, (WIDTH // 2 - 190, cy), (WIDTH // 2 + 190, cy), 2)
@@ -3151,15 +3321,15 @@ def show_tutorial():
             cy += 18
             continue
         if key_t:
-            line = font_normal.render(f"{key_t} {desc}", True, (200, 220, 240))
+            line = render_text(font_normal, f"{key_t} {desc}", (200, 220, 240))
         else:
-            line = font_normal.render(f"  {desc}", True, (180, 180, 180))
+            line = render_text(font_normal, f"  {desc}", (180, 180, 180))
         screen.blit(line, (WIDTH // 2 - 280, cy))
         cy += line.get_height() + 2
 
     # Blinking Enter hint
     if pygame.time.get_ticks() % 1000 < 600:
-        enter_hint = font_normal.render("[Enter] 开始游戏", True, (100, 255, 150))
+        enter_hint = render_text(font_normal, "[Enter] 开始游戏", (100, 255, 150))
         screen.blit(enter_hint, (WIDTH // 2 - enter_hint.get_width() // 2, HEIGHT - 62))
 
 
@@ -3224,14 +3394,14 @@ def show_stats():
     screen.blit(panel, (panel_x, panel_y))
 
     cy = panel_y + 24
-    title = font_big.render("生涯战绩", True, EXTRACT_COLOR)
+    title = render_text(font_big, "生涯战绩", EXTRACT_COLOR)
     screen.blit(title, (WIDTH // 2 - title.get_width() // 2, cy))
     cy += title.get_height() + 6
     pygame.draw.line(screen, MENU_RULE, (WIDTH // 2 - 200, cy), (WIDTH // 2 + 200, cy), 2)
     cy += 16
 
     if total_runs == 0:
-        hint = font_small.render("还没有出动记录 —— 按 Enter 开始第一战", True, GRAY)
+        hint = render_text(font_small, "还没有出动记录 —— 按 Enter 开始第一战", GRAY)
         screen.blit(hint, (WIDTH // 2 - hint.get_width() // 2, cy))
         cy += 30
 
@@ -3244,28 +3414,28 @@ def show_stats():
         ("撤离成功率", f"{rate:.0f}%"),
     ]
     for label, value in rows:
-        lab = font_normal.render(label, True, (200, 210, 230))
+        lab = render_text(font_normal, label, (200, 210, 230))
         # font_big (56px) inside a 44px row made consecutive numbers overlap.
-        val = font_normal.render(value, True, WHITE)
+        val = render_text(font_normal, value, WHITE)
         screen.blit(lab, (panel_x + 60, cy))
         screen.blit(val, (panel_x + panel_w - 60 - val.get_width(), cy))
         cy += 52
 
     cy += 12
-    div = font_small.render("── 难度解锁 ──", True, (200, 200, 100))
+    div = render_text(font_small, "── 难度解锁 ──", (200, 200, 100))
     screen.blit(div, (WIDTH // 2 - div.get_width() // 2, cy))
     cy += 32
     for name, unlocked in (("困难模式", hard_mode_unlocked),
                            ("极难模式", extreme_mode_unlocked)):
         state_text = "已解锁" if unlocked else "未解锁"
         color = (100, 255, 100) if unlocked else (170, 170, 180)
-        lab = font_normal.render(name, True, (200, 210, 230))
-        val = font_normal.render(state_text, True, color)
+        lab = render_text(font_normal, name, (200, 210, 230))
+        val = render_text(font_normal, state_text, color)
         screen.blit(lab, (panel_x + 60, cy))
         screen.blit(val, (panel_x + panel_w - 60 - val.get_width(), cy))
         cy += 38
 
-    back = font_small.render("[ESC] 返回主菜单", True, (200, 200, 200))
+    back = render_text(font_small, "[ESC] 返回主菜单", (200, 200, 200))
     screen.blit(back, (WIDTH // 2 - back.get_width() // 2, panel_y + panel_h - 46))
 
 
@@ -3276,12 +3446,12 @@ def show_main_menu():
     cy = 60
 
     # ---- Game title ----
-    title_surf = font_huge.render("HeliOps", True, MENU_ACCENT)
+    title_surf = render_text(font_huge, "HeliOps", MENU_ACCENT)
     title_x = WIDTH // 2 - title_surf.get_width() // 2
     screen.blit(title_surf, (title_x, cy))
     cy += title_surf.get_height() + 4
 
-    sub_surf = font_small.render("直升机撤离射击  ·  v%s" % GAME_VERSION, True, (160, 180, 220))
+    sub_surf = render_text(font_small, "直升机撤离射击  ·  v%s" % GAME_VERSION, (160, 180, 220))
     screen.blit(sub_surf, (WIDTH // 2 - sub_surf.get_width() // 2, cy))
     # Hairline rule under the heading, same accent language as the trailer's
     # title card.
@@ -3293,10 +3463,8 @@ def show_main_menu():
     # box. Say so in English (English renders fine) instead of leaving the
     # player staring at tofu.
     if not FONT_OK:
-        warn = font_small.render(
-            "No CJK font found - Chinese text shows as boxes. "
-            "Install Microsoft YaHei / Noto Sans CJK and restart.",
-            True, (255, 120, 90))
+        warn = render_text(font_small, "No CJK font found - Chinese text shows as boxes. "
+            "Install Microsoft YaHei / Noto Sans CJK and restart.", (255, 120, 90))
         screen.blit(warn, (WIDTH // 2 - warn.get_width() // 2, cy))
         cy += warn.get_height() + 14
 
@@ -3308,7 +3476,7 @@ def show_main_menu():
         panel.fill((20, 50, 30, 200))
         pygame.draw.rect(panel, result_color, (0, 0, panel_w, panel_h), 2, border_radius=10)
         screen.blit(panel, (WIDTH // 2 - panel_w // 2, cy))
-        r_surf = font_normal.render("√  撤离成功！", True, result_color)
+        r_surf = render_text(font_normal, "√  撤离成功！", result_color)
         screen.blit(r_surf, (WIDTH // 2 - r_surf.get_width() // 2, cy + 10))
         cy += panel_h + 28
     else:
@@ -3344,7 +3512,7 @@ def show_main_menu():
     difficulty_y = 0
     for key, label, color, enabled in menu_items:
         alpha_color = color if enabled else (80, 80, 80)
-        item_surf = font_normal.render(f"[{key}]  {label}", True, alpha_color)
+        item_surf = render_text(font_normal, f"[{key}]  {label}", alpha_color)
         screen.blit(item_surf, (WIDTH // 2 - item_surf.get_width() // 2, cy))
         if key == "D":
             difficulty_y = cy  # Track position for token display
@@ -3354,7 +3522,7 @@ def show_main_menu():
     if hard_mode_unlocked and difficulty_y > 0:
         token_str  = f"信物: {boss_token_count}"
         token_col  = (255, 180, 80)
-        token_surf = font_small.render(token_str, True, token_col)
+        token_surf = render_text(font_small, token_str, token_col)
         # Position to the right of the difficulty line
         token_x = WIDTH // 2 + 200
         screen.blit(token_surf, (token_x, difficulty_y + 2))
@@ -3379,7 +3547,7 @@ def show_main_menu():
         cur_y = panel_y + 6
 
         # Title
-        task_title = font_small.render("★ 极难模式解锁任务", True, (255, 180, 70))
+        task_title = render_text(font_small, "★ 极难模式解锁任务", (255, 180, 70))
         screen.blit(task_title, (WIDTH // 2 - task_title.get_width() // 2, cur_y))
         cur_y += 22
 
@@ -3392,7 +3560,7 @@ def show_main_menu():
             t1_text = f"任务1：困难模式累计击杀Boss  {min(hm_boss_kills, TASK1_BOSS_KILLS)}/{TASK1_BOSS_KILLS}"
             if t1_done:
                 t1_text += " √"
-        t1_surf = font_small.render(t1_text, True, (100, 255, 100) if t1_done else (190, 190, 200))
+        t1_surf = render_text(font_small, t1_text, (100, 255, 100) if t1_done else (190, 190, 200))
         screen.blit(t1_surf, (WIDTH // 2 - task_panel_w // 2 + 16, cur_y))
         cur_y += 22
 
@@ -3405,7 +3573,7 @@ def show_main_menu():
             t2_text = f"任务2：困难模式驱赶超级猎手  {min(hm_super_chaser_scared, TASK2_SCARED)}/{TASK2_SCARED}"
             if t2_done:
                 t2_text += " √"
-        t2_surf = font_small.render(t2_text, True, (100, 255, 100) if t2_done else (190, 190, 200))
+        t2_surf = render_text(font_small, t2_text, (100, 255, 100) if t2_done else (190, 190, 200))
         screen.blit(t2_surf, (WIDTH // 2 - task_panel_w // 2 + 16, cur_y))
         cur_y += 22
 
@@ -3418,13 +3586,13 @@ def show_main_menu():
             t3_text = f"任务3：困难模式单局击杀Boss  {min(mission_boss_kills, TASK3_MISSION_BOSS)}/{TASK3_MISSION_BOSS}"
             if t3_done:
                 t3_text += " √"
-        t3_surf = font_small.render(t3_text, True, (100, 255, 100) if t3_done else (190, 190, 200))
+        t3_surf = render_text(font_small, t3_text, (100, 255, 100) if t3_done else (190, 190, 200))
         screen.blit(t3_surf, (WIDTH // 2 - task_panel_w // 2 + 16, cur_y))
         cur_y += 28
 
         # Advanced tasks (shown after Extreme Mode unlock)
         if extreme_mode_permanent:
-            adv_title = font_small.render("★ 进阶任务（完成后+15次）", True, (255, 200, 100))
+            adv_title = render_text(font_small, "★ 进阶任务（完成后+15次）", (255, 200, 100))
             screen.blit(adv_title, (WIDTH // 2 - adv_title.get_width() // 2, cur_y))
             cur_y += 22
 
@@ -3433,7 +3601,7 @@ def show_main_menu():
             a1_text = f"进阶1：极难模式击杀Boss  {min(adv_boss_kills, ADV_TASK_BOSS_KILLS)}/{ADV_TASK_BOSS_KILLS}"
             if a1_done:
                 a1_text += " √"
-            a1_surf = font_small.render(a1_text, True, (100, 255, 100) if a1_done else (200, 200, 220))
+            a1_surf = render_text(font_small, a1_text, (100, 255, 100) if a1_done else (200, 200, 220))
             screen.blit(a1_surf, (WIDTH // 2 - task_panel_w // 2 + 16, cur_y))
             cur_y += 22
 
@@ -3442,7 +3610,7 @@ def show_main_menu():
             a2_text = f"进阶2：极难模式驱赶超级猎手  {min(adv_chaser_scared, ADV_TASK_SCARED)}/{ADV_TASK_SCARED}"
             if a2_done:
                 a2_text += " √"
-            a2_surf = font_small.render(a2_text, True, (100, 255, 100) if a2_done else (200, 200, 220))
+            a2_surf = render_text(font_small, a2_text, (100, 255, 100) if a2_done else (200, 200, 220))
             screen.blit(a2_surf, (WIDTH // 2 - task_panel_w // 2 + 16, cur_y))
             cur_y += 22
 
@@ -3451,7 +3619,7 @@ def show_main_menu():
             a3_text = f"进阶3：极难模式预估>400撤离  {min(adv_high_extract, ADV_TASK_HIGH_EXTRACT)}/{ADV_TASK_HIGH_EXTRACT}"
             if a3_done:
                 a3_text += " √"
-            a3_surf = font_small.render(a3_text, True, (100, 255, 100) if a3_done else (200, 200, 220))
+            a3_surf = render_text(font_small, a3_text, (100, 255, 100) if a3_done else (200, 200, 220))
             screen.blit(a3_surf, (WIDTH // 2 - task_panel_w // 2 + 16, cur_y))
             cur_y += 28
 
@@ -3459,7 +3627,7 @@ def show_main_menu():
         if extreme_mode_permanent:
             rem_text = f"极难模式剩余次数: {extreme_plays_remaining}"
             rem_color = (100, 255, 100) if extreme_plays_remaining > 5 else ((255, 200, 50) if extreme_plays_remaining > 0 else (255, 80, 80))
-            rem_surf = font_small.render(rem_text, True, rem_color)
+            rem_surf = render_text(font_small, rem_text, rem_color)
             screen.blit(rem_surf, (WIDTH // 2 - task_panel_w // 2 + 16, cur_y))
 
         cy += task_panel_h + 12
@@ -3467,7 +3635,7 @@ def show_main_menu():
     # ---- Main menu message bar (search_message shown here) ----
     if search_message_timer > 0:
         msg_color = (255, 80, 80) if search_message.startswith("×") else (100, 220, 255)
-        msg_surf = font_small.render(search_message, True, msg_color)
+        msg_surf = render_text(font_small, search_message, msg_color)
         msg_bg = pygame.Surface((msg_surf.get_width() + 24, msg_surf.get_height() + 12), pygame.SRCALPHA)
         msg_bg.fill((20, 10, 10, 220) if search_message.startswith("×") else (10, 20, 40, 200))
         msg_bg.set_alpha(min(255, search_message_timer * 3))
@@ -3484,7 +3652,7 @@ def show_main_menu():
     st_font = _ui_font(20)
     if st_font is None:
         st_font = font_small
-    st_surf = st_font.render(status, True, (110, 230, 150) if FONT_OK else (255, 90, 80))
+    st_surf = render_text(st_font, status, (110, 230, 150) if FONT_OK else (255, 90, 80))
     screen.blit(st_surf, (16, HEIGHT - 26))
 
     if not FONT_OK:
@@ -3498,7 +3666,7 @@ def show_main_menu():
             "The bundled font failed to load on this machine.",
             "Please report the file: Documents/HeliOps/font.log",
         ]):
-            s = st_font.render(line, True, (255, 190, 180))
+            s = render_text(st_font, line, (255, 190, 180))
             screen.blit(s, (60, HEIGHT // 2 - 24 + i * 24))
 
 
@@ -3513,7 +3681,7 @@ def show_death_screen():
     cy = 70
 
     # Title
-    title_surf = font_huge.render("已被击倒", True, (255, 60, 60))
+    title_surf = render_text(font_huge, "已被击倒", (255, 60, 60))
     screen.blit(title_surf, (WIDTH // 2 - title_surf.get_width() // 2, cy))
     cy += title_surf.get_height() + 16
 
@@ -3531,15 +3699,15 @@ def show_death_screen():
         }
         k_color = killer_colors.get(killer, (255, 180, 80))
 
-        k_label = font_normal.render("击毁者：", True, (140, 140, 140))
+        k_label = render_text(font_normal, "击毁者：", (140, 140, 140))
         screen.blit(k_label, (WIDTH // 2 - k_label.get_width() // 2, cy))
         cy += k_label.get_height() + 6
 
         # Killer name large text
-        k_name = font_big.render(killer, True, k_color)
+        k_name = render_text(font_big, killer, k_color)
         # Border glow effect
         for dx, dy in [(-2,0),(2,0),(0,-2),(0,2)]:
-            glow = font_big.render(killer, True, (k_color[0]//3, k_color[1]//3, k_color[2]//3))
+            glow = render_text(font_big, killer, (k_color[0]//3, k_color[1]//3, k_color[2]//3))
             screen.blit(glow, (WIDTH // 2 - k_name.get_width() // 2 + dx, cy + dy))
         screen.blit(k_name, (WIDTH // 2 - k_name.get_width() // 2, cy))
         cy += k_name.get_height() + 20
@@ -3556,17 +3724,17 @@ def show_death_screen():
         }
         desc = killer_desc.get(killer, "")
         if desc:
-            desc_surf = font_small.render(desc, True, (160, 120, 120))
+            desc_surf = render_text(font_small, desc, (160, 120, 120))
             screen.blit(desc_surf, (WIDTH // 2 - desc_surf.get_width() // 2, cy))
             cy += desc_surf.get_height() + 30
 
     # Score
-    sc_surf = font_normal.render(f"本局得分: {score} 分", True, (200, 200, 200))
+    sc_surf = render_text(font_normal, f"本局得分: {score} 分", (200, 200, 200))
     screen.blit(sc_surf, (WIDTH // 2 - sc_surf.get_width() // 2, cy))
     cy += sc_surf.get_height() + 40
 
     # Action hint
-    hint_surf = font_normal.render("[ 7 ]  返回主菜单", True, (180, 180, 180))
+    hint_surf = render_text(font_normal, "[ 7 ]  返回主菜单", (180, 180, 180))
     screen.blit(hint_surf, (WIDTH // 2 - hint_surf.get_width() // 2, cy))
 
 
@@ -3584,10 +3752,10 @@ def show_game_over():
         title_color = (255, 60, 60)
         subtitle    = "在战场上被击倒"
 
-    go_text      = font_huge.render(title, True, title_color)
-    sub_text     = font_normal.render(subtitle, True, GRAY)
-    sc_text      = font_big.render(f"最终得分: {score}", True, WHITE)
-    restart_text = font_normal.render("R 重开  |  Q 退出到主菜单（进度自动保存）", True, GRAY)
+    go_text      = render_text(font_huge, title, title_color)
+    sub_text     = render_text(font_normal, subtitle, GRAY)
+    sc_text      = render_text(font_big, f"最终得分: {score}", WHITE)
+    restart_text = render_text(font_normal, "R 重开  |  Q 退出到主菜单（进度自动保存）", GRAY)
 
     screen.blit(go_text,      (WIDTH // 2 - go_text.get_width() // 2,      HEIGHT // 2 - 100))
     screen.blit(sub_text,     (WIDTH // 2 - sub_text.get_width() // 2,     HEIGHT // 2 - 50))
@@ -4549,9 +4717,9 @@ try:
 
         if paused and not game_over and not in_shop and not in_transfer:
             draw_menu_backdrop()
-            p_title = font_big.render("已暂停", True, WHITE)
+            p_title = render_text(font_big, "已暂停", WHITE)
             screen.blit(p_title, (WIDTH // 2 - p_title.get_width() // 2, HEIGHT // 2 - 90))
-            p_hint = font_small.render("P 继续  |  Q 退出到主菜单（进度自动保存）", True, GRAY)
+            p_hint = render_text(font_small, "P 继续  |  Q 退出到主菜单（进度自动保存）", GRAY)
             screen.blit(p_hint, (WIDTH // 2 - p_hint.get_width() // 2, HEIGHT // 2 + 10))
             pygame.display.flip()
             continue
@@ -5711,7 +5879,7 @@ try:
             py = HEIGHT // 2 - ph // 2
             screen.blit(panel, (px, py))
             # Title
-            t_surf = font_huge.render("游戏已暂停", True, (255, 220, 100))
+            t_surf = render_text(font_huge, "游戏已暂停", (255, 220, 100))
             screen.blit(t_surf, (WIDTH // 2 - t_surf.get_width() // 2, py + 20))
             # Options
             opts = [
@@ -5721,7 +5889,7 @@ try:
             ]
             oy = py + 80
             for key, label, color in opts:
-                o_surf = font_normal.render(f"[{key}]  {label}", True, color)
+                o_surf = render_text(font_normal, f"[{key}]  {label}", color)
                 screen.blit(o_surf, (WIDTH // 2 - o_surf.get_width() // 2, oy))
                 oy += 50
 
@@ -5749,9 +5917,9 @@ except Exception as e:
     try:
         screen.fill((0, 0, 0))
         err_msg = f"游戏出错，详见日志:\n{err_log}"
-        surf = font_normal.render(err_msg, True, (255, 100, 100))
+        surf = render_text(font_normal, err_msg, (255, 100, 100))
         screen.blit(surf, (50, HEIGHT // 2 - 30))
-        detail = font_small.render(str(e)[:80], True, (200, 200, 200))
+        detail = render_text(font_small, str(e)[:80], (200, 200, 200))
         screen.blit(detail, (50, HEIGHT // 2 + 20))
         pygame.display.flip()
         pygame.time.wait(5000)
