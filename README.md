@@ -12,8 +12,8 @@
 
 | 平台 | 版本 | 下载 |
 | --- | --- | --- |
-| Windows | 10 / 11 64 位 | [HeliOps_Windows_Chinese_v1.4.0.zip](https://github.com/sunnychen786/HeliOps/releases/download/v1.4.0/HeliOps_Windows_Chinese_v1.4.0.zip) |
-| macOS | 12+（Intel / Apple 芯片） | [HeliOps_Mac_Chinese_v1.4.0.zip](https://github.com/sunnychen786/HeliOps/releases/download/v1.4.0/HeliOps_Mac_Chinese_v1.4.0.zip) |
+| Windows | 10 / 11 64 位 | [HeliOps_Windows_Chinese_v1.4.3.zip](https://github.com/sunnychen786/HeliOps/releases/download/v1.4.3/HeliOps_Windows_Chinese_v1.4.3.zip) |
+| macOS | 12+（Intel / Apple 芯片） | [HeliOps_Mac_Chinese_v1.4.3.zip](https://github.com/sunnychen786/HeliOps/releases/download/v1.4.3/HeliOps_Mac_Chinese_v1.4.3.zip) |
 
 解压即玩：Windows 双击 `HeliOps.exe`，macOS 双击 `HeliOps.app`（首次需要在「系统设置 → 隐私与安全性」里放行）。
 
@@ -33,6 +33,14 @@
 字体、路径在哪、中文是否可用。报问题时把这个文件发出来就行。
 
 ---
+
+## v1.4 带来了什么
+
+| | |
+| --- | --- |
+| **自带中文字体** | 内置 100 KB 的中文字体子集（Noto Sans SC，SIL OFL 许可），不再依赖系统字体 |
+| **自适应文字渲染** | 启动时自动检测本机显示是否会把字形糊成实心色块，一旦发现就自动换成不受影响的画法。彻底解决「界面变成一块块色条」 |
+| **字体诊断日志** | `Documents/HeliOps/font.log` 记录字体来源、路径、渲染模式；同目录还有 `font_render.png` 直接展示渲染结果 |
 
 ## v1.3 带来了什么
 
