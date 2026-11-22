@@ -229,6 +229,53 @@ if real_cjk:
         NS["FONT_GLOB_PATTERNS"] = saved_patterns
         NS["FONT_GLOB_DIR"] = saved_globdir
 
+# 7c. the text-mode probe must exist and every fallback mode must render
+#      real glyphs. On some machines the display driver blends the glyph
+#      alpha as if it were a colour channel, which turns the whole text into
+#      a solid bar. The game probes for that at startup and falls back to a
+#      rendering mode that cannot hit the bug, so all three modes have to
+#      produce readable output.
+if "_probe_text_mode" not in NS or "render_text" not in NS:
+    check("the text-mode probe and render_text helper exist", False,
+          "missing from game.py")
+else:
+    check("the text-mode probe and render_text helper exist", True)
+
+    import pygame as _pg
+
+    def _ink(surf, color):
+        px = _pg.image.tostring(surf, "RGB")
+        n = len(px) // 3
+        if not n:
+            return 0.0
+        r, g, b = color
+        hit = sum(1 for i in range(0, len(px), 3)
+                  if abs(px[i] - r) < 40 and abs(px[i + 1] - g) < 40
+                  and abs(px[i + 2] - b) < 50)
+        return hit / n
+
+    _font = NS["font_normal"]
+    _color = (240, 240, 240)
+    _results = []
+    for _mode in ("aa", "solid", "flat"):
+        NS["TEXT_MODE"] = _mode
+        try:
+            _surf = NS["render_text"](_font, "HeliOps 撤离", _color)
+            _test = _pg.Surface(_surf.get_size())
+            _test.fill((10, 16, 28))
+            _test.blit(_surf, (0, 0))
+            _ratio = _ink(_test, _color)
+            _results.append((_mode, _ratio))
+        except Exception as _exc:
+            _results.append((_mode, None))
+    NS["TEXT_MODE"] = "aa"
+
+    _bad = [m for m, r in _results if r is None or r > 0.55]
+    check("every text fallback mode draws real glyphs, not a solid bar",
+          not _bad,
+          ("flooded: %s" % _bad) if _bad
+          else "  ".join("%s=%.2f" % (m, r) for m, r in _results))
+
 # 8b. a font living under a NON-ASCII path (Chinese Windows user name) must
 #     still load -- FreeType opens font files with a narrow-character API, so
 #     such a path fails on Windows and the game has to copy the file
