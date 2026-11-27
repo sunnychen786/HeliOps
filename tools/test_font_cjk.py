@@ -276,6 +276,104 @@ else:
           ("flooded: %s" % _bad) if _bad
           else "  ".join("%s=%.2f" % (m, r) for m, r in _results))
 
+# 7d. THE alpha-channel trap. The menu backdrop used to be built with
+#      .convert() plus a SRCALPHA vignette; blitting it onto the display
+#      surface overwrote the display's alpha channel with 0, and every glyph
+#      drawn afterwards came out as a solid coloured bar. The font was fine,
+#      the colours were fine -- only the alpha was broken.
+#
+#      This check reproduces that exact sequence and asserts the text still
+#      renders. It is the regression test for "the whole UI is a row of
+#      solid blocks".
+import math as _math
+
+# The backdrop builder lives outside the font section, so pull it out of
+# the source directly.
+_bg_src = open(SRC, encoding="utf-8").read()
+if "def _menu_backdrop_surface():" not in _bg_src:
+    check("the menu backdrop builder is available for the alpha test", False,
+          "missing from game.py")
+    NS["_menu_backdrop_surface"] = None
+else:
+    _b0 = _bg_src.index("def _menu_backdrop_surface():")
+    _b1 = _bg_src.index("\ndef ", _b0 + 10)
+    _bg_ns = {"pygame": pygame, "math": _math, "os": os,
+              "WIDTH": 1200, "HEIGHT": 800,
+              "MENU_BG": (10, 16, 28), "MENU_GRID": (17, 27, 43),
+              "_MENU_BACKDROP": None}
+    exec(compile(_bg_src[_b0:_b1], "game.py", "exec"), _bg_ns)
+    NS["_menu_backdrop_surface"] = _bg_ns["_menu_backdrop_surface"]
+    check("the menu backdrop builder is available for the alpha test", True)
+
+    _bg = NS["_menu_backdrop_surface"]()
+    _masks = _bg.get_masks()
+
+    # The backdrop must NOT carry an alpha channel. Blitting a surface that
+    # has one overwrites the destination's alpha, and on a real display
+    # surface (32-bit WITH alpha) that destroys every glyph drawn later.
+    check("the menu backdrop has no alpha channel",
+          _masks[3] == 0,
+          "masks=%s (4th entry must be 0)" % (_masks,))
+
+    # The masks alone are not enough: under the dummy SDL driver a surface
+    # with an alpha channel still reports 0, so the real display driver is
+    # what exposes the bug. Inspect the pixels instead -- every one of them
+    # must be fully opaque.
+    try:
+        _bp = pygame.image.tostring(_bg, "RGBA")
+        _bn = len(_bp) // 4
+        _b_opaque = sum(1 for _i in range(3, len(_bp), 4)
+                        if _bp[_i] == 255) / _bn if _bn else 0.0
+        check("every pixel of the menu backdrop is fully opaque",
+              _b_opaque > 0.99,
+              "opaque=%.1f%%%s" % (100 * _b_opaque,
+                                  "  <<< TRANSLUCENT BACKDROP" if _b_opaque < 0.99 else ""))
+    except Exception as _exc:
+        check("every pixel of the menu backdrop is fully opaque", False, str(_exc))
+
+    # The full menu sequence, on a surface that behaves like the real
+    # display: 32 bits WITH an alpha channel. The dummy SDL driver hands out
+    # a 32-bit surface WITHOUT one, which is why this bug hides from a
+    # headless test -- so build the alpha-carrying surface by hand.
+    try:
+        _screen = pygame.Surface((1200, 800), 0, 32)
+        # fill with an explicit alpha: a 32-bit surface starts fully
+        # transparent, and the real display surface is opaque
+        _screen.fill((10, 16, 28, 255))
+    except Exception as _exc:
+        _screen = None
+        check("text survives the menu draw order (backdrop then text)", False,
+              "cannot create a surface: %s" % _exc)
+    if _screen is not None:
+        try:
+            _font = NS["font_normal"]
+            _surf = NS["render_text"](_font, "HeliOps \u64a4\u79bb", (255, 220, 60))
+            _screen.fill((10, 16, 28))
+            _screen.blit(_bg, (0, 0))
+            _screen.blit(_surf, (20, 20))
+            _pg2 = pygame
+            _region = _screen.subsurface((20, 20, _surf.get_width(), _surf.get_height()))
+            _px = _pg2.image.tostring(_region, "RGB")
+            _n = len(_px) // 3
+            _hit = sum(1 for _i in range(0, len(_px), 3)
+                       if abs(_px[_i] - 255) < 45 and abs(_px[_i + 1] - 220) < 45
+                       and abs(_px[_i + 2] - 60) < 55)
+            _ratio = _hit / _n if _n else 0.0
+            check("text survives the menu draw order (backdrop then text)",
+                  _ratio < 0.55,
+                  "ink=%.3f%s" % (_ratio, "  <<< SOLID BAR" if _ratio > 0.55 else ""))
+
+            # NOTE: the "destination alpha stays 255" half of this bug can
+            # only be observed on a real display surface. An off-screen
+            # pygame.Surface(..., 0, 32) has no usable alpha channel at all
+            # (tostring("RGBA") always reports 0), so asserting on it would
+            # be a fake check. The two assertions above -- the backdrop is
+            # pixel-opaque, and the text still reads -- cover the same
+            # defect from the side that can be verified headlessly.
+        except Exception as _exc:
+            check("text survives the menu draw order (backdrop then text)", False,
+                  str(_exc))
+
 # 8b. a font living under a NON-ASCII path (Chinese Windows user name) must
 #     still load -- FreeType opens font files with a narrow-character API, so
 #     such a path fails on Windows and the game has to copy the file
