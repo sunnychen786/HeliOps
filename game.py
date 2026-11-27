@@ -28,7 +28,7 @@ except Exception:          # pragma: no cover - only if the module is missing
 # ==============================
 pygame.init()
 
-GAME_VERSION = "1.4.3"
+GAME_VERSION = "1.4.4"
 
 WIDTH, HEIGHT = 1200,800
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -3348,24 +3348,48 @@ def _menu_backdrop_surface():
     if _MENU_BACKDROP is not None:
         return _MENU_BACKDROP
 
-    field = pygame.Surface((WIDTH, HEIGHT)).convert()
+    # ---------------------------------------------------------------------
+    # Why 24-bit RGB and NOT .convert() / SRCALPHA
+    # ---------------------------------------------------------------------
+    # The display surface on macOS is 32-bit WITH an alpha channel. When a
+    # surface carrying a per-pixel alpha (or one whose alpha was never
+    # initialised, which is what .convert() produces) is blitted onto it, the
+    # destination's alpha is overwritten with the source's.
+    #
+    # The menu backdrop did exactly that: its alpha became 0, so the display
+    # surface's alpha became 0 as well, and every glyph blitted afterwards
+    # came out as a solid coloured bar -- the font was fine, the colours were
+    # fine, the advance widths were fine, only the alpha channel was broken.
+    #
+    # Fix: build the backdrop as a 24-bit RGB surface (no alpha channel at
+    # all) and bake the vignette into the pixel VALUES. Nothing that reaches
+    # the display surface ever carries an alpha, so the text keeps blending
+    # correctly.
+    field = pygame.Surface((WIDTH, HEIGHT), 0, 24)
     field.fill(MENU_BG)
     for i in range(0, HEIGHT + 1, 40):
         pygame.draw.line(field, MENU_GRID, (0, i), (WIDTH, i), 1)
     for i in range(0, WIDTH + 1, 40):
         pygame.draw.line(field, MENU_GRID, (i, 0), (i, HEIGHT), 1)
 
-    # Vignette built small (75x50) and smoothscaled up: a full-res per-pixel
+    # Vignette built small (120x80) and smoothscaled up: a full-res per-pixel
     # loop is 960k set_at calls and visibly stalls the first menu frame.
-    vw, vh = 75, 50
-    vig = pygame.Surface((vw, vh), pygame.SRCALPHA)
+    # It is a 24-bit GREY mask (white = untouched, black = darkest) that is
+    # multiplied onto the field, so the darkening happens in the RGB values
+    # and the alpha channel is never involved.
+    vw, vh = 120, 80
+    vig = pygame.Surface((vw, vh), 0, 24)
+    vig.fill((255, 255, 255))
     for y in range(vh):
         for x in range(vw):
             dx = (x - vw / 2.0) / (vw / 2.0)
             dy = (y - vh / 2.0) / (vh / 2.0)
             d = min(1.0, math.hypot(dx * 0.72, dy) / 1.18)
-            vig.set_at((x, y), (0, 0, 0, int(150 * d * d)))
-    field.blit(pygame.transform.smoothscale(vig, (WIDTH, HEIGHT)), (0, 0))
+            k = 1.0 - 0.60 * (d * d)
+            v = int(255 * k)
+            vig.set_at((x, y), (v, v, v))
+    vig = pygame.transform.smoothscale(vig, (WIDTH, HEIGHT))
+    field.blit(vig, (0, 0), special_flags=pygame.BLEND_RGB_MULT)
 
     _MENU_BACKDROP = field
     return field
