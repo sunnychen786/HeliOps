@@ -26,6 +26,19 @@ ASSETS = [
     ("发行版_Mac/HeliOps_Mac_Chinese_v%s.zip", "macOS 版（双击 HeliOps.app 直接玩）"),
 ]
 
+# Fallbacks: the release directory keeps both a Chinese and an ASCII copy of
+# each zip, but which one exists depends on how the package was produced.
+# Try the preferred name first, then the alternatives, so a release is never
+# published with a platform missing.
+FALLBACKS = {
+    "macOS 版（双击 HeliOps.app 直接玩）": [
+        "发行版_Mac/HeliOps_Mac中文版_v%s.zip",
+    ],
+    "Windows 版（双击 HeliOps.exe 直接玩）": [
+        "发行版_Windows/HeliOps_Windows中文版_v%s.zip",
+    ],
+}
+
 BODY = """## HeliOps v%s
 
 单人俯视角「搜打撤」射击游戏：进入战区搜刮物资，活着走到撤离点，直升机会降落接应。
@@ -119,6 +132,15 @@ def main():
         items.append((trailer, "宣传片（73 秒）"))
 
     for path, desc in items:
+        if not os.path.exists(path):
+            # Try the alternative spellings before giving up -- a release
+            # with one platform missing is worse than a slightly odd name.
+            for alt in FALLBACKS.get(desc, []):
+                cand = os.path.join(DESKTOP, alt % ver)
+                if os.path.exists(cand):
+                    path = cand
+                    print("using fallback:", cand)
+                    break
         if not os.path.exists(path):
             print("SKIP (missing):", path)
             continue
